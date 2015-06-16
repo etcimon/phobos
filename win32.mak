@@ -224,7 +224,8 @@ SRC_STD_INTERNAL_WINDOWS= std\internal\windows\advapi32.d
 
 SRC_ETC=
 
-SRC_ETC_C= etc\c\zlib.d etc\c\curl.d etc\c\sqlite3.d
+SRC_ETC_C= etc\c\zlib.d etc\c\curl.d etc\c\sqlite3.d \
+    etc\c\odbc\sql.d etc\c\odbc\sqlext.d etc\c\odbc\sqltypes.d etc\c\odbc\sqlucode.d
 
 SRC_TO_COMPILE_NOT_STD= \
 	$(SRC_STD_REGEX) \
@@ -395,6 +396,10 @@ DOCS=	$(DOC)\object.html \
 	$(DOC)\etc_c_curl.html \
 	$(DOC)\etc_c_sqlite3.html \
 	$(DOC)\etc_c_zlib.html \
+	$(DOC)\etc_c_odbc_sql.html \
+	$(DOC)\etc_c_odbc_sqlext.html \
+	$(DOC)\etc_c_odbc_sqltypes.html \
+	$(DOC)\etc_c_odbc_sqlucode.html \
 	$(DOC)\index.html
 
 $(LIB) : $(SRC_TO_COMPILE) \
@@ -536,8 +541,8 @@ $(ZLIB): $(SRC_ZLIB)
 
 DDOCFLAGS=$(DFLAGS) -version=StdDdoc
 
-$(DOC)\object.html : $(STDDOC) $(DRUNTIME)\src\object_.d
-	$(DMD) -c -o- $(DDOCFLAGS) -Df$(DOC)\object.html $(STDDOC) $(DRUNTIME)\src\object_.d -I$(DRUNTIME)\src\
+$(DOC)\object.html : $(STDDOC) $(DRUNTIME)\src\object.d
+	$(DMD) -c -o- $(DDOCFLAGS) -Df$(DOC)\object.html $(STDDOC) $(DRUNTIME)\src\object.d -I$(DRUNTIME)\src\
 
 $(DOC)\index.html : $(STDDOC) index.d
 	$(DMD) -c -o- $(DDOCFLAGS) -Df$(DOC)\index.html $(STDDOC) index.d
@@ -878,10 +883,21 @@ $(DOC)\etc_c_sqlite3.html : $(STDDOC) etc\c\sqlite3.d
 $(DOC)\etc_c_zlib.html : $(STDDOC) etc\c\zlib.d
 	$(DMD) -c -o- $(DDOCFLAGS) -Df$(DOC)\etc_c_zlib.html $(STDDOC) etc\c\zlib.d
 
+$(DOC)\etc_c_odbc_sql.html : $(STDDOC) etc\c\odbc\sql.d
+	$(DMD) -c -o- $(DDOCFLAGS) -Df$(DOC)\etc_c_odbc_sql.html $(STDDOC) etc\c\odbc\sql.d
+
+$(DOC)\etc_c_odbc_sqlext.html : $(STDDOC) etc\c\odbc\sqlext.d
+	$(DMD) -c -o- $(DDOCFLAGS) -Df$(DOC)\etc_c_odbc_sqlext.html $(STDDOC) etc\c\odbc\sqlext.d
+
+$(DOC)\etc_c_odbc_sqltypes.html : $(STDDOC) etc\c\odbc\sqltypes.d
+	$(DMD) -c -o- $(DDOCFLAGS) -Df$(DOC)\etc_c_odbc_sqltypes.html $(STDDOC) etc\c\odbc\sqltypes.d
+
+$(DOC)\etc_c_odbc_sql.html : $(STDDOC) etc\c\odbc\sql.d
+	$(DMD) -c -o- $(DDOCFLAGS) -Df$(DOC)\etc_c_odbc_sql.html $(STDDOC) etc\c\odbc\sql.d
 
 ######################################################
 
-zip : win32.mak win64.mak posix.mak $(STDDOC) $(SRC) \
+zip : win32.mak win64.mak posix.mak osmodel.mak $(STDDOC) $(SRC) \
 	$(SRC_STD) $(SRC_STD_C) $(SRC_STD_WIN) \
 	$(SRC_STD_C_WIN) $(SRC_STD_C_LINUX) $(SRC_STD_C_OSX) $(SRC_STD_C_FREEBSD) \
 	$(SRC_ETC) $(SRC_ETC_C) $(SRC_ZLIB) $(SRC_STD_NET) $(SRC_STD_DIGEST) $(SRC_STD_CONTAINER) \
@@ -889,7 +905,7 @@ zip : win32.mak win64.mak posix.mak $(STDDOC) $(SRC) \
 	$(SRC_STD_INTERNAL_WINDOWS) $(SRC_STD_REGEX) $(SRC_STD_RANGE) $(SRC_STD_ALGO) \
 	$(SRC_STD_LOGGER)
 	del phobos.zip
-	zip32 -u phobos win32.mak win64.mak posix.mak $(STDDOC)
+	zip32 -u phobos win32.mak win64.mak posix.mak osmodel.mak $(STDDOC)
 	zip32 -u phobos $(SRC)
 	zip32 -u phobos $(SRC_STD)
 	zip32 -u phobos $(SRC_STD_C)
@@ -935,3 +951,8 @@ install: phobos.zip
 	$(CP) $(DOC)\index.html $(DIR)\html\d\phobos\index.html
 	+rd/s/q $(DIR)\src\phobos
 	unzip -o phobos.zip -d $(DIR)\src\phobos
+
+auto-tester-build: targets
+
+auto-tester-test: unittest
+

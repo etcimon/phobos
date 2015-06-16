@@ -86,10 +86,10 @@ $(TR $(TH Module) $(TH Functions) )
 $(LEADINGROW Publicly imported functions)
     $(TR $(TD std.algorithm)
         $(TD
-         $(SHORTXREF algorithm, cmp)
-         $(SHORTXREF algorithm, count)
-         $(SHORTXREF algorithm, endsWith)
-         $(SHORTXREF algorithm, startsWith)
+         $(SHORTXREF_PACK algorithm,comparison,cmp)
+         $(SHORTXREF_PACK algorithm,searching,count)
+         $(SHORTXREF_PACK algorithm,searching,endsWith)
+         $(SHORTXREF_PACK algorithm,searching,startsWith)
     ))
     $(TR $(TD std.array)
         $(TD
@@ -134,6 +134,7 @@ See_Also:
 
 Macros: WIKI = Phobos/StdString
         SHORTXREF=$(XREF2 $1, $2, $(TT $2))
+        SHORTXREF_PACK=$(XREF_PACK_NAMED  $2, $(TT $3),$1, $3)
 
 Copyright: Copyright Digital Mars 2007-.
 
@@ -2039,7 +2040,7 @@ auto representation(Char)(Char[] s) @safe pure nothrow @nogc
     if (isSomeChar!Char)
 {
     alias ToRepType(T) = TypeTuple!(ubyte, ushort, uint)[T.sizeof / 2];
-    return cast(ModifyTypePreservingSTC!(ToRepType, Char)[])s;
+    return cast(ModifyTypePreservingTQ!(ToRepType, Char)[])s;
 }
 
 ///
@@ -3224,7 +3225,7 @@ S leftJustify(S)(S s, size_t width, dchar fillChar = ' ')
     $(D s) doesn't fill.
 
     Params:
-        s = string or range of characters
+        r = string or range of characters
         width = minimum field width
         fillChar = used to pad end up to $(D width) characters
 
@@ -3352,7 +3353,7 @@ S rightJustify(S)(S s, size_t width, dchar fillChar = ' ')
     $(D s) doesn't fill.
 
     Params:
-        s = string or forward range of characters
+        r = string or forward range of characters
         width = minimum field width
         fillChar = used to pad end up to $(D width) characters
 
@@ -6182,7 +6183,7 @@ auto assumeUTF(T)(T[] arr) pure
 {
     import std.utf : validate;
     alias ToUTFType(U) = TypeTuple!(char, wchar, dchar)[U.sizeof / 2];
-    auto asUTF = cast(ModifyTypePreservingSTC!(ToUTFType, T)[])arr;
+    auto asUTF = cast(ModifyTypePreservingTQ!(ToUTFType, T)[])arr;
     debug validate(asUTF);
     return asUTF;
 }

@@ -42,33 +42,30 @@ else version (Posix)
 else
     static assert(false, "Module " ~ .stringof ~ " not implemented for this OS.");
 
-version (unittest)
+package @property string deleteme() @safe
 {
-    @property string deleteme() @safe
+    import std.process : thisProcessID;
+    static _deleteme = "deleteme.dmd.unittest.pid";
+    static _first = true;
+
+    if(_first)
     {
-        import std.process : thisProcessID;
-        static _deleteme = "deleteme.dmd.unittest.pid";
-        static _first = true;
-
-        if(_first)
-        {
-            _deleteme = buildPath(tempDir(), _deleteme) ~ to!string(thisProcessID);
-            _first = false;
-        }
-
-        return _deleteme;
+        _deleteme = buildPath(tempDir(), _deleteme) ~ to!string(thisProcessID);
+        _first = false;
     }
 
-    version(Android)
-    {
-        enum system_directory = "/system/etc";
-        enum system_file      = "/system/etc/hosts";
-    }
-    else version(Posix)
-    {
-        enum system_directory = "/usr/include";
-        enum system_file      = "/usr/include/assert.h";
-    }
+    return _deleteme;
+}
+
+version(Android)
+{
+    package enum system_directory = "/system/etc";
+    package enum system_file      = "/system/etc/hosts";
+}
+else version(Posix)
+{
+    package enum system_directory = "/usr/include";
+    package enum system_file      = "/usr/include/assert.h";
 }
 
 
@@ -1539,7 +1536,7 @@ private bool ensureDirExists(in char[] pathname)
     {
         if (core.sys.posix.sys.stat.mkdir(pathname.tempCString(), octal!777) == 0)
             return true;
-        cenforce(errno == EEXIST, pathname);
+        cenforce(errno == EEXIST || errno == EISDIR, pathname);
     }
     enforce(pathname.isDir, new FileException(pathname.idup));
     return false;
