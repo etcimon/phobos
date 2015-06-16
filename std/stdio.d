@@ -2345,7 +2345,8 @@ $(D Range) that locks the file and allows fast writing to it.
             import core.stdc.wchar_ : fwide;
             import std.exception : enforce;
 
-            enforce(f._p && f._p.handle);
+            if (!f._p || !f._p.handle)
+				return;
             fps_ = f._p.handle;
             orientation_ = fwide(fps_, 0);
             FLOCK(fps_);
@@ -2412,10 +2413,12 @@ $(D Range) that locks the file and allows fast writing to it.
             import std.traits : ParameterTypeTuple;
             static auto trustedFPUTC(int ch, _iobuf* h) @trusted
             {
+				if (!h) return ch;
                 return FPUTC(ch, h);
             }
             static auto trustedFPUTWC(ParameterTypeTuple!FPUTWC[0] ch, _iobuf* h) @trusted
             {
+				if (!h) return ch;
                 return FPUTWC(ch, h);
             }
 
