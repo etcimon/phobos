@@ -27,8 +27,8 @@ CP=cp
 DIR=\dmd2
 
 ## Visual C directories
-VCDIR=\Program Files (x86)\Microsoft Visual Studio 12.0\VC
-SDKDIR=\Program Files (x86)\Microsoft SDKs\Windows\v7.1A
+VCDIR=C:\Program Files (x86)\Microsoft Visual Studio 12.0\VC
+SDKDIR=C:\Program Files (x86)\Microsoft SDKs\Windows\v7.1A
 
 ## Flags for VC compiler
 
