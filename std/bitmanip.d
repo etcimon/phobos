@@ -37,18 +37,12 @@ version(unittest)
 }
 
 
-private string myToStringx(ulong n)
-{
-    enum s = "0123456789";
-    if (n < 10)
-        return s[cast(size_t)n..cast(size_t)n+1];
-    else
-        return myToStringx(n / 10) ~ myToStringx(n % 10);
-}
-
 private string myToString(ulong n)
 {
-    return myToStringx(n) ~ (n > uint.max ? "UL" : "U");
+    import core.internal.string;
+    UnsignedStringBuf buf;
+    auto s = unsignedToTempString(n, buf);
+    return cast(string)s ~ (n > uint.max ? "UL" : "U");
 }
 
 private template createAccessors(
@@ -586,6 +580,7 @@ unittest
 // Issue 12477
 unittest
 {
+    import std.algorithm : canFind;
     import std.bitmanip : bitfields;
     import core.exception : AssertError;
 
@@ -600,11 +595,11 @@ unittest
 
     try { s.a = uint.max; assert(0); }
     catch (AssertError ae)
-    { assert(ae.msg == "Value is greater than the maximum value of bitfield 'a'", ae.msg); }
+    { assert(ae.msg.canFind("Value is greater than the maximum value of bitfield 'a'"), ae.msg); }
 
     try { s.b = int.min;  assert(0); }
     catch (AssertError ae)
-    { assert(ae.msg == "Value is smaller than the minimum value of bitfield 'b'", ae.msg); }
+    { assert(ae.msg.canFind("Value is smaller than the minimum value of bitfield 'b'"), ae.msg); }
 }
 
 /**
@@ -2166,8 +2161,8 @@ private ulong swapEndianImpl(ulong val) @trusted pure nothrow @nogc
 
 unittest
 {
-    import std.typetuple;
-    foreach(T; TypeTuple!(bool, byte, ubyte, short, ushort, int, uint, long, ulong, char, wchar, dchar))
+    import std.meta;
+    foreach(T; AliasSeq!(bool, byte, ubyte, short, ushort, int, uint, long, ulong, char, wchar, dchar))
     {
         scope(failure) writefln("Failed type: %s", T.stringof);
         T val;
@@ -2282,9 +2277,9 @@ private auto nativeToBigEndianImpl(T)(T val) @safe pure nothrow @nogc
 
 unittest
 {
-    import std.typetuple;
-    foreach(T; TypeTuple!(bool, byte, ubyte, short, ushort, int, uint, long, ulong,
-                          char, wchar, dchar
+    import std.meta;
+    foreach(T; AliasSeq!(bool, byte, ubyte, short, ushort, int, uint, long, ulong,
+                         char, wchar, dchar
         /* The trouble here is with floats and doubles being compared against nan
          * using a bit compare. There are two kinds of nans, quiet and signaling.
          * When a nan passes through the x87, it converts signaling to quiet.
@@ -2456,10 +2451,10 @@ private auto nativeToLittleEndianImpl(T)(T val) @safe pure nothrow @nogc
 
 unittest
 {
-    import std.typetuple;
-    foreach(T; TypeTuple!(bool, byte, ubyte, short, ushort, int, uint, long, ulong,
-                          char, wchar, dchar/*,
-                          float, double*/))
+    import std.meta;
+    foreach(T; AliasSeq!(bool, byte, ubyte, short, ushort, int, uint, long, ulong,
+                         char, wchar, dchar/*,
+                         float, double*/))
     {
         scope(failure) writefln("Failed type: %s", T.stringof);
         T val;
@@ -2586,8 +2581,8 @@ private template isFloatOrDouble(T)
 
 unittest
 {
-    import std.typetuple;
-    foreach(T; TypeTuple!(float, double))
+    import std.meta;
+    foreach(T; AliasSeq!(float, double))
     {
         static assert(isFloatOrDouble!(T));
         static assert(isFloatOrDouble!(const T));
@@ -2615,9 +2610,9 @@ private template canSwapEndianness(T)
 
 unittest
 {
-    import std.typetuple;
-    foreach(T; TypeTuple!(bool, ubyte, byte, ushort, short, uint, int, ulong,
-                          long, char, wchar, dchar, float, double))
+    import std.meta;
+    foreach(T; AliasSeq!(bool, ubyte, byte, ushort, short, uint, int, ulong,
+                         long, char, wchar, dchar, float, double))
     {
         static assert(canSwapEndianness!(T));
         static assert(canSwapEndianness!(const T));
@@ -2628,7 +2623,7 @@ unittest
     }
 
     //!
-    foreach(T; TypeTuple!(real, string, wstring, dstring))
+    foreach(T; AliasSeq!(real, string, wstring, dstring))
     {
         static assert(!canSwapEndianness!(T));
         static assert(!canSwapEndianness!(const T));
@@ -3706,11 +3701,11 @@ unittest
 {
     import std.format : format;
     import std.array;
-    import std.typetuple;
-    foreach(endianness; TypeTuple!(Endian.bigEndian, Endian.littleEndian))
+    import std.meta;
+    foreach(endianness; AliasSeq!(Endian.bigEndian, Endian.littleEndian))
     {
         auto toWrite = appender!(ubyte[])();
-        alias Types = TypeTuple!(uint, int, long, ulong, short, ubyte, ushort, byte, uint);
+        alias Types = AliasSeq!(uint, int, long, ulong, short, ubyte, ushort, byte, uint);
         ulong[] values = [42, -11, long.max, 1098911981329L, 16, 255, 19012, 2, 17];
         assert(Types.length == values.length);
 
@@ -3781,8 +3776,8 @@ unittest
 
 unittest
 {
-    import std.typetuple;
-    foreach (T; TypeTuple!(byte, ubyte, short, ushort, int, uint, long, ulong))
+    import std.meta;
+    foreach (T; AliasSeq!(byte, ubyte, short, ushort, int, uint, long, ulong))
     {
         assert(countTrailingZeros(cast(T)0) == 8 * T.sizeof);
         assert(countTrailingZeros(cast(T)1) == 0);
@@ -3862,8 +3857,8 @@ unittest
 
 unittest
 {
-    import std.typetuple;
-    foreach (T; TypeTuple!(byte, ubyte, short, ushort, int, uint, long, ulong))
+    import std.meta;
+    foreach (T; AliasSeq!(byte, ubyte, short, ushort, int, uint, long, ulong))
     {
         assert(countBitsSet(cast(T)0) == 0);
         assert(countBitsSet(cast(T)1) == 1);
@@ -3963,8 +3958,8 @@ unittest
     import std.algorithm : equal;
     import std.range: iota;
 
-    import std.typetuple;
-    foreach (T; TypeTuple!(byte, ubyte, short, ushort, int, uint, long, ulong))
+    import std.meta;
+    foreach (T; AliasSeq!(byte, ubyte, short, ushort, int, uint, long, ulong))
     {
         assert(bitsSet(cast(T)0).empty);
         assert(bitsSet(cast(T)1).equal([0]));

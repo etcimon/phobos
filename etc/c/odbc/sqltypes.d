@@ -3,7 +3,7 @@ Declarations for interfacing with the ODBC library.
 
 Adapted with minimal changes from the work of David L. Davis
 (refer to the $(WEB
-forum.dlang.org/thread/cfk7ql$(DOLLAR)1p4n$(DOLLAR)1@digitaldaemon.com#post-cfk7ql:241p4n:241:40digitaldaemon.com,
+forum.dlang.org/post/cfk7ql$(DOLLAR)1p4n$(DOLLAR)1@digitaldaemon.com,
 original announcement)).
 
 `etc.c.odbc.sqlext.d` corresponds to the `sqlext.h` C header file.
@@ -152,7 +152,7 @@ struct SQL_INTERVAL_STRUCT
 };
 
 // * internal representation of numeric data type *
-const int SQL_MAX_NUMERIC_LEN =	16;
+const int SQL_MAX_NUMERIC_LEN = 16;
 struct SQL_NUMERIC_STRUCT
 {
     SQLCHAR  precision;

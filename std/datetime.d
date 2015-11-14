@@ -96,7 +96,7 @@ auto restoredTime = SysTime.fromISOExtString(timeString);
         $(WEB en.wikipedia.org/wiki/List_of_tz_database_time_zones,
               List of Time Zones)<br>
 
-    Copyright: Copyright 2010 - 2011
+    Copyright: Copyright 2010 - 2015
     License:   $(WEB www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
     Authors:   Jonathan M Davis and Kato Shoichi
     Source:    $(PHOBOSSRC std/_datetime.d)
@@ -310,83 +310,193 @@ public:
     /++
         Returns the current time in the given time zone.
 
+        Params:
+            clockType = The $(CXREF time, ClockType) indicates which system
+                        clock to use to get the current time. Very few programs
+                        need to use anything other than the default.
+            tz = The time zone for the SysTime that's returned.
+
         Throws:
-            $(XREF exception, ErrnoException) (on Posix) or $(XREF exception, Exception) (on Windows)
-            if it fails to get the time of day.
+            $(LREF DateTimeException) if it fails to get the time.
       +/
-    static SysTime currTime(immutable TimeZone tz = LocalTime()) @safe
+    static SysTime currTime(ClockType clockType = ClockType.normal)(immutable TimeZone tz = LocalTime()) @safe
     {
-        return SysTime(currStdTime, tz);
+        return SysTime(currStdTime!clockType, tz);
     }
 
     unittest
     {
+        import std.format : format;
+        assert(currTime().timezone is LocalTime());
         assert(currTime(UTC()).timezone is UTC());
 
-        //I have no idea why, but for some reason, Windows/Wine likes to get
-        //time_t wrong when getting it with core.stdc.time.time. On one box
-        //I have (which has its local time set to UTC), it always gives time_t
-        //in the real local time (America/Los_Angeles), and after the most recent
-        //DST switch, every Windows box that I've tried it in is reporting
-        //time_t as being 1 hour off of where it's supposed to be. So, I really
-        //don't know what the deal is, but given what I'm seeing, I don't trust
-        //core.stdc.time.time on Windows, so I'm just going to disable this test
-        //on Windows.
+        // core.stdc.time.time does not always use unix time on Windows systems.
+        // In particular, dmc does not use unix time. If we can guarantee that
+        // the MS runtime uses unix time, then we may be able run this test
+        // then, but for now, we're just not going to run this test on Windows.
         version(Posix)
         {
+            static import std.math;
             immutable unixTimeD = currTime().toUnixTime();
             immutable unixTimeC = core.stdc.time.time(null);
-            immutable diff = unixTimeC - unixTimeD;
+            assert(std.math.abs(unixTimeC - unixTimeD) <= 2);
+        }
 
-            assert(diff >= -2);
-            assert(diff <= 2);
+        auto norm1 = Clock.currTime;
+        auto norm2 = Clock.currTime(UTC());
+        assert(norm1 <= norm2, format("%s %s", norm1, norm2));
+        assert(abs(norm1 - norm2) <= seconds(2));
+
+        import std.meta : AliasSeq;
+        foreach(ct; AliasSeq!(ClockType.coarse, ClockType.precise, ClockType.second))
+        {
+            scope(failure) writefln("ClockType.%s", ct);
+            auto value1 = Clock.currTime!ct;
+            auto value2 = Clock.currTime!ct(UTC());
+            assert(value1 <= value2, format("%s %s", value1, value2));
+            assert(abs(value1 - value2) <= seconds(2));
         }
     }
+
 
     /++
         Returns the number of hnsecs since midnight, January 1st, 1 A.D. for the
         current time.
 
+        Params:
+            clockType = The $(CXREF time, ClockType) indicates which system
+                        clock to use to get the current time. Very few programs
+                        need to use anything other than the default.
+
         Throws:
             $(LREF DateTimeException) if it fails to get the time.
       +/
-    static @property long currStdTime() @trusted
+    static @property long currStdTime(ClockType clockType = ClockType.normal)() @trusted
     {
+        static if(clockType != ClockType.coarse &&
+                  clockType != ClockType.normal &&
+                  clockType != ClockType.precise &&
+                  clockType != ClockType.second)
+        {
+            import std.format : format;
+            static assert(0, format("ClockType.%s is not supported by Clock.currTime or Clock.currStdTime", clockType));
+        }
+
         version(Windows)
         {
             FILETIME fileTime;
             GetSystemTimeAsFileTime(&fileTime);
-
-            return FILETIMEToStdTime(&fileTime);
+            immutable result = FILETIMEToStdTime(&fileTime);
+            static if(clockType == ClockType.second)
+            {
+                // Ideally, this would use core.std.time.time, but the C runtime
+                // has to be using unix time for that to work, and that's not
+                // guaranteed on Windows. Digital Mars does not use unix time.
+                // MS may or may not. If it does, then this can be made to use
+                // core.stdc.time for MS, but for now, we'll leave it like this.
+                return convert!("seconds", "hnsecs")(convert!("hnsecs", "seconds")(result));
+            }
+            else
+                return result;
         }
         else version(Posix)
         {
-            enum hnsecsToUnixEpoch = 621_355_968_000_000_000L;
+            enum hnsecsToUnixEpoch = unixTimeToStdTime(0);
 
-            static if(is(typeof(clock_gettime)))
+            version(OSX)
             {
+                static if(clockType == ClockType.second)
+                    return unixTimeToStdTime(core.stdc.time.time(null));
+                else
+                {
+                    timeval tv;
+                    if(gettimeofday(&tv, null) != 0)
+                        throw new TimeException("Call to gettimeofday() failed");
+                    return convert!("seconds", "hnsecs")(tv.tv_sec) +
+                           convert!("usecs", "hnsecs")(tv.tv_usec) +
+                           hnsecsToUnixEpoch;
+                }
+            }
+            else version(linux)
+            {
+                static if(clockType == ClockType.second)
+                    return unixTimeToStdTime(core.stdc.time.time(null));
+                else
+                {
+                    import core.sys.linux.time;
+                    static if(clockType == ClockType.coarse)       alias clockArg = CLOCK_REALTIME_COARSE;
+                    else static if(clockType == ClockType.normal)  alias clockArg = CLOCK_REALTIME;
+                    else static if(clockType == ClockType.precise) alias clockArg = CLOCK_REALTIME;
+                    else static assert(0, "Previous static if is wrong.");
+                    timespec ts;
+                    if(clock_gettime(clockArg, &ts) != 0)
+                        throw new TimeException("Call to clock_gettime() failed");
+                    return convert!("seconds", "hnsecs")(ts.tv_sec) +
+                           ts.tv_nsec / 100 +
+                           hnsecsToUnixEpoch;
+                }
+            }
+            else version(FreeBSD)
+            {
+                import core.sys.freebsd.time;
+                static if(clockType == ClockType.coarse)       alias clockArg = CLOCK_REALTIME_FAST;
+                else static if(clockType == ClockType.normal)  alias clockArg = CLOCK_REALTIME;
+                else static if(clockType == ClockType.precise) alias clockArg = CLOCK_REALTIME_PRECISE;
+                else static if(clockType == ClockType.second)  alias clockArg = CLOCK_SECOND;
+                else static assert(0, "Previous static if is wrong.");
                 timespec ts;
-
-                if(clock_gettime(CLOCK_REALTIME, &ts) != 0)
-                    throw new TimeException("Failed in clock_gettime().");
-
+                if(clock_gettime(clockArg, &ts) != 0)
+                    throw new TimeException("Call to clock_gettime() failed");
                 return convert!("seconds", "hnsecs")(ts.tv_sec) +
                        ts.tv_nsec / 100 +
                        hnsecsToUnixEpoch;
             }
-            else
+            else version(Solaris)
             {
-                timeval tv;
-
-                if(gettimeofday(&tv, null) != 0)
-                    throw new TimeException("Failed in gettimeofday().");
-
-                return convert!("seconds", "hnsecs")(tv.tv_sec) +
-                       convert!("usecs", "hnsecs")(tv.tv_usec) +
-                       hnsecsToUnixEpoch;
+                static if(clockType == ClockType.second)
+                    return unixTimeToStdTime(core.stdc.time.time(null));
+                else
+                {
+                    import core.sys.solaris.time;
+                    static if(clockType == ClockType.coarse)       alias clockArg = CLOCK_REALTIME;
+                    else static if(clockType == ClockType.normal)  alias clockArg = CLOCK_REALTIME;
+                    else static if(clockType == ClockType.precise) alias clockArg = CLOCK_REALTIME;
+                    else static assert(0, "Previous static if is wrong.");
+                    timespec ts;
+                    if(clock_gettime(clockArg, &ts) != 0)
+                        throw new TimeException("Call to clock_gettime() failed");
+                    return convert!("seconds", "hnsecs")(ts.tv_sec) +
+                           ts.tv_nsec / 100 +
+                           hnsecsToUnixEpoch;
+                }
             }
+            else static assert(0, "Unsupported OS");
+        }
+        else static assert(0, "Unsupported OS");
+    }
+
+    unittest
+    {
+        import std.math : abs;
+        import std.format : format;
+        enum limit = convert!("seconds", "hnsecs")(2);
+
+        auto norm1 = Clock.currStdTime;
+        auto norm2 = Clock.currStdTime;
+        assert(norm1 <= norm2, format("%s %s", norm1, norm2));
+        assert(abs(norm1 - norm2) <= limit);
+
+        import std.meta : AliasSeq;
+        foreach(ct; AliasSeq!(ClockType.coarse, ClockType.precise, ClockType.second))
+        {
+            scope(failure) writefln("ClockType.%s", ct);
+            auto value1 = Clock.currStdTime!ct;
+            auto value2 = Clock.currStdTime!ct;
+            assert(value1 <= value2, format("%s %s", value1, value2));
+            assert(abs(value1 - value2) <= limit);
         }
     }
+
 
     /++
         The current system tick. The number of ticks per second varies from
@@ -594,10 +704,11 @@ public:
         assertThrown!DateTimeException(SysTime(DateTime.init, seconds(1), UTC()));
     }
 
+    // @@@DEPRECATED_2016-08@@@
     /++
-        $(RED Scheduled for deprecation. Please use the overload which takes a
+        $(RED Deprecated. Please use the overload which takes a
               $(CXREF time, Duration) for the fractional seconds. This overload
-              will be deprecated in 2.068).
+              will be removed in August 2016).
 
         Params:
             dateTime = The $(LREF DateTime) to use to set this $(LREF SysTime)'s
@@ -611,7 +722,7 @@ public:
         Throws:
             $(LREF DateTimeException) if $(D fracSec) is negative.
       +/
-    //deprecated("Please use the overload which takes a Duration instead of a FracSec.")
+    deprecated("Please use the overload which takes a Duration instead of a FracSec.")
     this(in DateTime dateTime, in FracSec fracSec, immutable TimeZone tz = null) @safe
     {
         immutable fracHNSecs = fracSec.hnsecs;
@@ -632,7 +743,7 @@ public:
             assert(0, "Date, TimeOfDay, or DateTime's constructor threw when it shouldn't have.");
     }
 
-    /+deprecated+/ unittest
+    deprecated unittest
     {
         import std.format : format;
 
@@ -2016,15 +2127,16 @@ public:
     }
 
 
+    // @@@DEPRECATED_2016-08@@@
     /++
-        $(RED Scheduled for deprecation. Please use $(LREF fracSecs) instead of
-              fracSec. It uses a $(CXREF time, Duration) to represent the
-              fractional seconds instead of a $(CXREF time, FracSec). This
-              overload will be deprecated in 2.068).
+        $(RED Deprecated. Please use $(LREF fracSecs) instead of fracSec. It
+              uses a $(CXREF time, Duration) to represent the fractional seconds
+              instead of a $(CXREF time, FracSec). This overload will be removed
+              in August 2016).
 
         Fractional seconds past the second.
      +/
-    //deprecated("Please use fracSecs (with an s) rather than fracSec (without an s). It returns a Duration instead of a FracSec, as FracSec is being deprecated.")
+    deprecated("Please use fracSecs (with an s) rather than fracSec (without an s). It returns a Duration instead of a FracSec, as FracSec is being deprecated.")
     @property FracSec fracSec() @safe const nothrow
     {
         try
@@ -2042,7 +2154,7 @@ public:
             assert(0, "FracSec.from!\"hnsecs\"() threw.");
     }
 
-    /+deprecated+/ unittest
+    deprecated unittest
     {
         import std.range;
         import std.format : format;
@@ -2088,11 +2200,12 @@ public:
     }
 
 
+    // @@@DEPRECATED_2016-08@@@
     /++
-        $(RED Scheduled for deprecation. Please use $(LREF fracSecs) instead of
-              fracSec. It uses a $(CXREF time, Duration) to represent the
-              fractional seconds instead of a $(CXREF time, FracSec). This
-              overload will be deprecated in 2.068).
+        $(RED Deprecated. Please use $(LREF fracSecs) instead of fracSec. It
+              uses a $(CXREF time, Duration) to represent the fractional seconds
+              instead of a $(CXREF time, FracSec). This overload will be removed
+              in August 2016).
 
         Fractional seconds past the second.
 
@@ -2103,7 +2216,7 @@ public:
         Throws:
             $(LREF DateTimeException) if $(D fracSec) is negative.
      +/
-    //deprecated("Please use fracSecs (with an s) rather than fracSec (without an s). It takes a Duration instead of a FracSec, as FracSec is being deprecated.")
+    deprecated("Please use fracSecs (with an s) rather than fracSec (without an s). It takes a Duration instead of a FracSec, as FracSec is being deprecated.")
     @property void fracSec(FracSec fracSec) @safe
     {
         immutable fracHNSecs = fracSec.hnsecs;
@@ -2132,7 +2245,7 @@ public:
         adjTime = daysHNSecs + hnsecs;
     }
 
-    /+deprecated+/ unittest
+    deprecated unittest
     {
         import std.range;
         import std.format : format;
@@ -2343,28 +2456,61 @@ public:
 
 
     /++
-        Returns a $(D time_t) which represents the same time as this
-        $(LREF SysTime).
+        Converts this $(LREF SysTime) to unix time (i.e. seconds from midnight,
+        January 1st, 1970 in UTC).
 
-        Note that like all conversions in std.datetime, this is a truncating
-        conversion.
+        The C standard does not specify the representation of time_t, so it is
+        implementation defined. On POSIX systems, unix time is equivalent to
+        time_t, but that's not necessarily true on other systems (e.g. it is
+        not true for the Digital Mars C runtime). So, be careful when using unix
+        time with C functions on non-POSIX systems.
 
-        If $(D time_t) is 32 bits, rather than 64, and the result can't fit in a
-        32-bit value, then the closest value that can be held in 32 bits will be
-        used (so $(D time_t.max) if it goes over and $(D time_t.min) if it goes
-        under).
+        By default, the return type is time_t (which is normally an alias for
+        int on 32-bit systems and long on 64-bit systems), but if a different
+        size is required than either int or long can be passed as a template
+        argument to get the desired size.
+
+        If the return type is int, and the result can't fit in an int, then the
+        closest value that can be held in 32 bits will be used (so $(D int.max)
+        if it goes over and $(D int.min) if it goes under). However, no attempt
+        is made to deal with integer overflow if the return type is long.
+
+        Params:
+            T = The return type (int or long). It defaults to time_t, which is
+                normally 32 bits on a 32-bit system and 64 bits on a 64-bit
+                system.
+
+        Returns:
+            A signed integer representing the unix time which is equivalent to
+            this SysTime.
       +/
-    time_t toUnixTime() @safe const pure nothrow
+    T toUnixTime(T = time_t)() @safe const pure nothrow
+        if(is(T == int) || is(T == long))
     {
-        return stdTimeToUnixTime(_stdTime);
+        return stdTimeToUnixTime!T(_stdTime);
+    }
+
+    ///
+    unittest
+    {
+        assert(SysTime(DateTime(1970, 1, 1), UTC()).toUnixTime() == 0);
+
+        auto pst = new immutable SimpleTimeZone(hours(-8));
+        assert(SysTime(DateTime(1970, 1, 1), pst).toUnixTime() == 28800);
+
+        auto utc = SysTime(DateTime(2007, 12, 22, 8, 14, 45), UTC());
+        assert(utc.toUnixTime() == 1_198_311_285);
+
+        auto ca = SysTime(DateTime(2007, 12, 22, 8, 14, 45), pst);
+        assert(ca.toUnixTime() == 1_198_340_085);
     }
 
     unittest
     {
         assert(SysTime(DateTime(1970, 1, 1), UTC()).toUnixTime() == 0);
-        assert(SysTime(DateTime(1970, 1, 1, 0, 0, 0), hnsecs(1), UTC()).toUnixTime() == 0);
-        assert(SysTime(DateTime(1970, 1, 1, 0, 0, 0), usecs(1), UTC()).toUnixTime() == 0);
-        assert(SysTime(DateTime(1970, 1, 1, 0, 0, 0), msecs(1), UTC()).toUnixTime() == 0);
+        import std.meta : AliasSeq;
+        foreach(units; AliasSeq!("hnsecs", "usecs", "msecs"))
+            assert(SysTime(DateTime(1970, 1, 1, 0, 0, 0), dur!units(1), UTC()).toUnixTime() == 0);
         assert(SysTime(DateTime(1970, 1, 1, 0, 0, 1), UTC()).toUnixTime() == 1);
         assert(SysTime(DateTime(1969, 12, 31, 23, 59, 59), hnsecs(9_999_999), UTC()).toUnixTime() == 0);
         assert(SysTime(DateTime(1969, 12, 31, 23, 59, 59), usecs(999_999), UTC()).toUnixTime() == 0);
@@ -2374,23 +2520,77 @@ public:
 
 
     /++
+        Converts from unix time (i.e. seconds from midnight, January 1st, 1970
+        in UTC) to a $(LREF SysTime).
+
+        The C standard does not specify the representation of time_t, so it is
+        implementation defined. On POSIX systems, unix time is equivalent to
+        time_t, but that's not necessarily true on other systems (e.g. it is
+        not true for the Digital Mars C runtime). So, be careful when using unix
+        time with C functions on non-POSIX systems.
+
+        Params:
+            unixTime = Seconds from midnight, January 1st, 1970 in UTC.
+            tz = The time zone for the SysTime that's returned.
+      +/
+    static SysTime fromUnixTime(long unixTime, immutable TimeZone tz = LocalTime()) @safe pure nothrow
+    {
+        return SysTime(unixTimeToStdTime(unixTime), tz);
+    }
+
+    ///
+    unittest
+    {
+        assert(SysTime.fromUnixTime(0) ==
+               SysTime(DateTime(1970, 1, 1), UTC()));
+
+        auto pst = new immutable SimpleTimeZone(hours(-8));
+        assert(SysTime.fromUnixTime(28800) ==
+               SysTime(DateTime(1970, 1, 1), pst));
+
+        auto st1 = SysTime.fromUnixTime(1_198_311_285, UTC());
+        assert(st1 == SysTime(DateTime(2007, 12, 22, 8, 14, 45), UTC()));
+        assert(st1.timezone is UTC());
+        assert(st1 == SysTime(DateTime(2007, 12, 22, 0, 14, 45), pst));
+
+        auto st2 = SysTime.fromUnixTime(1_198_311_285, pst);
+        assert(st2 == SysTime(DateTime(2007, 12, 22, 8, 14, 45), UTC()));
+        assert(st2.timezone is pst);
+        assert(st2 == SysTime(DateTime(2007, 12, 22, 0, 14, 45), pst));
+    }
+
+    unittest
+    {
+        assert(SysTime.fromUnixTime(0) == SysTime(DateTime(1970, 1, 1), UTC()));
+        assert(SysTime.fromUnixTime(1) == SysTime(DateTime(1970, 1, 1, 0, 0, 1), UTC()));
+        assert(SysTime.fromUnixTime(-1) == SysTime(DateTime(1969, 12, 31, 23, 59, 59), UTC()));
+
+        auto st = SysTime.fromUnixTime(0);
+        auto dt = cast(DateTime)st;
+        assert(dt <= DateTime(1970, 2, 1) && dt >= DateTime(1969, 12, 31));
+        assert(st.timezone is LocalTime());
+
+        auto aest = new immutable SimpleTimeZone(hours(10));
+        assert(SysTime.fromUnixTime(-36000) == SysTime(DateTime(1970, 1, 1), aest));
+    }
+
+
+    /++
         Returns a $(D timeval) which represents this $(LREF SysTime).
 
         Note that like all conversions in std.datetime, this is a truncating
         conversion.
 
-        If $(D time_t) is 32 bits, rather than 64, and the result can't fit in a
-        32-bit value, then the closest value that can be held in 32 bits will be
-        used for $(D tv_sec). (so $(D time_t.max) if it goes over and
-        $(D time_t.min) if it goes under).
+        If $(D timeval.tv_sec) is int, and the result can't fit in an int, then
+        the closest value that can be held in 32 bits will be used for
+        $(D tv_sec). (so $(D int.max) if it goes over and $(D int.min) if it
+        goes under).
       +/
     timeval toTimeVal() @safe const pure nothrow
     {
-        immutable tv_sec = toUnixTime();
-
-        immutable fracHNSecs = removeUnitsFromHNSecs!"seconds"(_stdTime - 621355968000000000L);
-        immutable tv_usec = cast(int)convert!("hnsecs", "usecs")(fracHNSecs);
-
+        immutable tv_sec = toUnixTime!(typeof(timeval.tv_sec))();
+        immutable fracHNSecs = removeUnitsFromHNSecs!"seconds"(_stdTime - 621_355_968_000_000_000L);
+        immutable tv_usec = cast(typeof(timeval.tv_usec))convert!("hnsecs", "usecs")(fracHNSecs);
         return timeval(tv_sec, tv_usec);
     }
 
@@ -26359,11 +26559,6 @@ public:
 
         Throws:
             $(LREF DateTimeException) if the given time zone could not be found.
-
-        Examples:
---------------------
-auto tz = TimeZone.getTimeZone("America/Los_Angeles");
---------------------
       +/
     static immutable(TimeZone) getTimeZone(string name) @safe
     {
@@ -26390,6 +26585,12 @@ auto tz = TimeZone.getTimeZone("America/Los_Angeles");
         }
     }
 
+    ///
+    unittest
+    {
+        auto tz = TimeZone.getTimeZone("America/Los_Angeles");
+    }
+
     // The purpose of this is to handle the case where a Windows time zone is
     // new and exists on an up-to-date Windows box but does not exist on Windows
     // boxes which have not been properly updated. The "date added" is included
@@ -26413,7 +26614,7 @@ auto tz = TimeZone.getTimeZone("America/Los_Angeles");
     //reads a time zone file.
     unittest
     {
-        import std.path : buildPath;
+        import std.path : chainPath;
         import std.file : exists, isFile;
         import std.conv : to;
         import std.format : format;
@@ -26492,7 +26693,7 @@ auto tz = TimeZone.getTimeZone("America/Los_Angeles");
                 //be there, but since PosixTimeZone _does_ use leap seconds if
                 //the time zone file does, we'll test that functionality if the
                 //appropriate files exist.
-                if(buildPath(PosixTimeZone.defaultTZDatabaseDir, "right", tzName).exists)
+                if (chainPath(PosixTimeZone.defaultTZDatabaseDir, "right", tzName).exists)
                 {
                     auto leapTZ = PosixTimeZone.getTimeZone("right/" ~ tzName);
 
@@ -26856,21 +27057,21 @@ public:
         }
         else version(Windows)
         {
+            TIME_ZONE_INFORMATION tzInfo;
+            GetTimeZoneInformation(&tzInfo);
+
+            //Cannot use to!string() like this should, probably due to bug http://d.puremagic.com/issues/show_bug.cgi?id=5016
+            //return to!string(tzInfo.StandardName);
+
+            wchar[32] str;
+
+            foreach(i, ref wchar c; str)
+                c = tzInfo.StandardName[i];
+
+            string retval;
+
             try
             {
-                TIME_ZONE_INFORMATION tzInfo;
-                GetTimeZoneInformation(&tzInfo);
-
-                //Cannot use to!string() like this should, probably due to bug http://d.puremagic.com/issues/show_bug.cgi?id=5016
-                //return to!string(tzInfo.StandardName);
-
-                wchar[32] str;
-
-                foreach(i, ref wchar c; str)
-                    c = tzInfo.StandardName[i];
-
-                string retval;
-
                 foreach(dchar c; str)
                 {
                     if(c == '\0')
@@ -26882,7 +27083,7 @@ public:
                 return retval;
             }
             catch(Exception e)
-                assert(0, "GetTimeZoneInformation() threw.");
+                assert(0, "GetTimeZoneInformation() returned invalid UTF-16.");
         }
     }
 
@@ -26927,21 +27128,21 @@ public:
         }
         else version(Windows)
         {
+            TIME_ZONE_INFORMATION tzInfo;
+            GetTimeZoneInformation(&tzInfo);
+
+            //Cannot use to!string() like this should, probably due to bug http://d.puremagic.com/issues/show_bug.cgi?id=5016
+            //return to!string(tzInfo.DaylightName);
+
+            wchar[32] str;
+
+            foreach(i, ref wchar c; str)
+                c = tzInfo.DaylightName[i];
+
+            string retval;
+
             try
             {
-                TIME_ZONE_INFORMATION tzInfo;
-                GetTimeZoneInformation(&tzInfo);
-
-                //Cannot use to!string() like this should, probably due to bug http://d.puremagic.com/issues/show_bug.cgi?id=5016
-                //return to!string(tzInfo.DaylightName);
-
-                wchar[32] str;
-
-                foreach(i, ref wchar c; str)
-                    c = tzInfo.DaylightName[i];
-
-                string retval;
-
                 foreach(dchar c; str)
                 {
                     if(c == '\0')
@@ -26953,7 +27154,7 @@ public:
                 return retval;
             }
             catch(Exception e)
-                assert(0, "GetTimeZoneInformation() threw.");
+                assert(0, "GetTimeZoneInformation() returned invalid UTF-16.");
         }
     }
 
@@ -27012,15 +27213,10 @@ public:
         }
         else version(Windows)
         {
-            try
-            {
-                TIME_ZONE_INFORMATION tzInfo;
-                GetTimeZoneInformation(&tzInfo);
+            TIME_ZONE_INFORMATION tzInfo;
+            GetTimeZoneInformation(&tzInfo);
 
-                return tzInfo.DaylightDate.wMonth != 0;
-            }
-            catch(Exception e)
-                assert(0, "GetTimeZoneInformation() threw.");
+            return tzInfo.DaylightDate.wMonth != 0;
         }
     }
 
@@ -27075,11 +27271,7 @@ public:
             }
 
             TIME_ZONE_INFORMATION tzInfo;
-
-            try
-                GetTimeZoneInformation(&tzInfo);
-            catch(Exception e)
-                assert(0, "The impossible happened. GetTimeZoneInformation() threw.");
+            GetTimeZoneInformation(&tzInfo);
 
             return WindowsTimeZone._dstInEffect(&tzInfo, stdTime);
         }
@@ -27116,11 +27308,7 @@ public:
         else version(Windows)
         {
             TIME_ZONE_INFORMATION tzInfo;
-
-            try
-                GetTimeZoneInformation(&tzInfo);
-            catch(Exception e)
-                assert(0, "GetTimeZoneInformation() threw.");
+            GetTimeZoneInformation(&tzInfo);
 
             return WindowsTimeZone._utcToTZ(&tzInfo, stdTime, hasDST);
         }
@@ -27172,11 +27360,7 @@ public:
         else version(Windows)
         {
             TIME_ZONE_INFORMATION tzInfo;
-
-            try
-                GetTimeZoneInformation(&tzInfo);
-            catch(Exception e)
-                assert(0, "GetTimeZoneInformation() threw.");
+            GetTimeZoneInformation(&tzInfo);
 
             return WindowsTimeZone._tzToUTC(&tzInfo, adjTime, hasDST);
         }
@@ -27333,31 +27517,15 @@ private:
     }
 
 
-    static immutable LocalTime _localTime = new immutable(LocalTime)();
-    // Use low-lock singleton pattern with _tzsetWasCalled (see http://dconf.org/talks/simcha.html)
-    static bool _lowLock;
-    static shared bool _tzsetWasCalled;
-
-
     // This is done so that we can maintain purity in spite of doing an impure
     // operation the first time that LocalTime() is called.
     static immutable(LocalTime) singleton() @trusted
     {
-        if(!_lowLock)
-        {
-            synchronized
-            {
-                if(!_tzsetWasCalled)
-                {
-                    tzset();
-                    _tzsetWasCalled = true;
-                }
-            }
-
-            _lowLock = true;
-        }
-
-        return _localTime;
+        import std.concurrency : initOnce;
+        static instance = new immutable(LocalTime)();
+        static shared bool guard;
+        initOnce!guard({tzset(); return true;}());
+        return instance;
     }
 }
 
@@ -27604,15 +27772,7 @@ public:
         this._utcOffset = utcOffset;
     }
 
-    /++
-        $(RED Deprecated. Please use the overload which takes a Duration. This
-              overload will be removed in December 2014).
-
-        Params:
-            utcOffset = This time zone's offset from UTC in minutes with west of
-                        negative (it is added to UTC to get the adjusted time).
-            stdName   = The $(D stdName) for this time zone.
-      +/
+    // Explicitly undocumented. It will be removed in August 2016. @@@DEPRECATED_2016-08@@@
     deprecated("Please use the overload which takes a Duration.")
     this(int utcOffset, string stdName = "") @safe immutable pure
     {
@@ -27889,9 +28049,9 @@ private:
     Note:
         Unless your system's local time zone deals with leap seconds (which is
         highly unlikely), then the only way to get a time zone which
-        takes leap seconds into account is to use $(LREF PosixTimeZone) with a
+        takes leap seconds into account is to use $(D PosixTimeZone) with a
         time zone whose name starts with "right/". Those time zone files do
-        include leap seconds, and $(LREF PosixTimeZone) will take them into account
+        include leap seconds, and $(D PosixTimeZone) will take them into account
         (though posix systems which use a "right/" time zone as their local time
         zone will $(I not) take leap seconds into account even though they're
         in the file).
@@ -27905,7 +28065,7 @@ private:
 final class PosixTimeZone : TimeZone
 {
     import std.stdio : File;
-    import std.path : buildNormalizedPath, extension;
+    import std.path : extension;
     import std.file : isDir, isFile, exists, dirEntries, SpanMode, DirEntry;
     import std.string : strip, representation;
     import std.algorithm : countUntil, canFind, startsWith;
@@ -28058,15 +28218,6 @@ public:
         Throws:
             $(LREF DateTimeException) if the given time zone could not be found or
             $(D FileException) if the TZ Database file could not be opened.
-
-        Examples:
---------------------
-auto tz = PosixTimeZone.getTimeZone("America/Los_Angeles");
-
-assert(tz.name == "America/Los_Angeles");
-assert(tz.stdName == "PST");
-assert(tz.dstName == "PDT");
---------------------
       +/
     //TODO make it possible for tzDatabaseDir to be gzipped tar file rather than an uncompressed
     //     directory.
@@ -28075,13 +28226,15 @@ assert(tz.dstName == "PDT");
         import std.algorithm : sort;
         import std.range : retro;
         import std.format : format;
+        import std.path : asNormalizedPath, chainPath;
+        import std.conv : to;
 
         name = strip(name);
 
         enforce(tzDatabaseDir.exists(), new DateTimeException(format("Directory %s does not exist.", tzDatabaseDir)));
         enforce(tzDatabaseDir.isDir, new DateTimeException(format("%s is not a directory.", tzDatabaseDir)));
 
-        immutable file = buildNormalizedPath(tzDatabaseDir, name);
+        const file = asNormalizedPath(chainPath(tzDatabaseDir, name)).to!string;
 
         enforce(file.exists(), new DateTimeException(format("File %s does not exist.", file)));
         enforce(file.isFile, new DateTimeException(format("%s is not a file.", file)));
@@ -28370,6 +28523,19 @@ assert(tz.dstName == "PDT");
             throw dte;
         catch(Exception e)
             throw new DateTimeException("Not a valid TZ data file", __FILE__, __LINE__, e);
+    }
+
+    ///
+    unittest
+    {
+        version(Posix)
+        {
+            auto tz = PosixTimeZone.getTimeZone("America/Los_Angeles");
+
+            assert(tz.name == "America/Los_Angeles");
+            assert(tz.stdName == "PST");
+            assert(tz.dstName == "PDT");
+        }
     }
 
     /++
@@ -28708,17 +28874,17 @@ version(StdDdoc)
         occur (especially for historical dates). Also, the TZ Database files
         include far more time zones than Windows does. So, for accurate
         time zone information, use the TZ Database files with
-        $(LREF PosixTimeZone) rather than $(LREF WindowsTimeZone). However, because
-        $(LREF WindowsTimeZone) uses Windows system calls to deal with the time,
+        $(LREF PosixTimeZone) rather than $(D WindowsTimeZone). However, because
+        $(D WindowsTimeZone) uses Windows system calls to deal with the time,
         it's far more likely to match the behavior of other Windows programs.
         Be aware of the differences when selecting a method.
 
-        $(LREF WindowsTimeZone) does not exist on Posix systems.
+        $(D WindowsTimeZone) does not exist on Posix systems.
 
-        To get a $(LREF WindowsTimeZone), either call
+        To get a $(D WindowsTimeZone), either call
         $(D WindowsTimeZone.getTimeZone) or call $(D TimeZone.getTimeZone)
         (which will give a $(LREF PosixTimeZone) on Posix systems and a
-         $(LREF WindowsTimeZone) on Windows systems).
+         $(D WindowsTimeZone) on Windows systems).
 
         See_Also:
             $(WEB www.iana.org/time-zones, Home of the TZ Database files)
@@ -29170,28 +29336,23 @@ else version(Posix)
     void setTZEnvVar(string tzDatabaseName) @trusted nothrow
     {
         import std.internal.cstring : tempCString;
-        import std.path : buildNormalizedPath;
+        import std.path : asNormalizedPath, chainPath;
+        import core.sys.posix.stdlib : setenv;
+        import core.sys.posix.time : tzset;
 
-        try
-        {
-            immutable value = buildNormalizedPath(PosixTimeZone.defaultTZDatabaseDir, tzDatabaseName);
-            setenv("TZ", value.tempCString(), 1);
-            tzset();
-        }
-        catch(Exception e)
-            assert(0, "The impossible happened. setenv or tzset threw.");
+        auto value = asNormalizedPath(chainPath(PosixTimeZone.defaultTZDatabaseDir, tzDatabaseName));
+        setenv("TZ", value.tempCString(), 1);
+        tzset();
     }
 
 
     void clearTZEnvVar() @trusted nothrow
     {
-        try
-        {
-            unsetenv("TZ");
-            tzset();
-        }
-        catch(Exception e)
-            assert(0, "The impossible happened. unsetenv or tzset threw.");
+        import core.sys.posix.stdlib : unsetenv;
+        import core.sys.posix.time : tzset;
+
+        unsetenv("TZ");
+        tzset();
     }
 }
 
@@ -29299,7 +29460,7 @@ string tzDatabaseNameToWindowsTZName(string tzName) @safe pure nothrow @nogc
         case "America/Buenos_Aires": return "Argentina Standard Time";
         case "America/Cambridge_Bay": return "Mountain Standard Time";
         case "America/Campo_Grande": return "Central Brazilian Standard Time";
-        case "America/Cancun": return "Central Standard Time (Mexico)";
+        case "America/Cancun": return "Eastern Standard Time (Mexico)";
         case "America/Caracas": return "Venezuela Standard Time";
         case "America/Catamarca": return "Argentina Standard Time";
         case "America/Cayenne": return "SA Eastern Standard Time";
@@ -29479,7 +29640,6 @@ string tzDatabaseNameToWindowsTZName(string tzName) @safe pure nothrow @nogc
         case "Asia/Oral": return "West Asia Standard Time";
         case "Asia/Phnom_Penh": return "SE Asia Standard Time";
         case "Asia/Pontianak": return "SE Asia Standard Time";
-        case "Asia/Pyongyang": return "Korea Standard Time";
         case "Asia/Qatar": return "Arab Standard Time";
         case "Asia/Qyzylorda": return "Central Asia Standard Time";
         case "Asia/Rangoon": return "Myanmar Standard Time";
@@ -29623,6 +29783,7 @@ string tzDatabaseNameToWindowsTZName(string tzName) @safe pure nothrow @nogc
         case "PST8PDT": return "Pacific Standard Time";
         case "Pacific/Apia": return "Samoa Standard Time";
         case "Pacific/Auckland": return "New Zealand Standard Time";
+        case "Pacific/Bougainville": return "Central Pacific Standard Time";
         case "Pacific/Efate": return "Central Pacific Standard Time";
         case "Pacific/Enderbury": return "Tonga Standard Time";
         case "Pacific/Fakaofo": return "Tonga Standard Time";
@@ -29718,6 +29879,7 @@ string windowsTZNameToTZDatabaseName(string tzName) @safe pure nothrow @nogc
         case "E. Europe Standard Time": return "Europe/Minsk";
         case "E. South America Standard Time": return "America/Sao_Paulo";
         case "Eastern Standard Time": return "America/New_York";
+        case "Eastern Standard Time (Mexico)": return "America/Cancun";
         case "Egypt Standard Time": return "Africa/Cairo";
         case "Ekaterinburg Standard Time": return "Asia/Yekaterinburg";
         case "FLE Standard Time": return "Europe/Kiev";
@@ -29826,70 +29988,10 @@ version(Windows) unittest
    of the system clock varies from system to system, and other system-dependent
    and situation-dependent stuff (such as the overhead of a context switch
    between threads) can also affect $(D StopWatch)'s accuracy.
-
-   Examples:
---------------------
-void foo()
-{
-    StopWatch sw;
-    enum n = 100;
-    TickDuration[n] times;
-    TickDuration last = TickDuration.from!"seconds"(0);
-    foreach(i; 0..n)
-    {
-       sw.start(); //start/resume mesuring.
-       foreach(unused; 0..1_000_000)
-           bar();
-       sw.stop();  //stop/pause measuring.
-       //Return value of peek() after having stopped are the always same.
-       writeln((i + 1) * 1_000_000, " times done, lap time: ",
-               sw.peek().msecs, "[ms]");
-       times[i] = sw.peek() - last;
-       last = sw.peek();
-    }
-    real sum = 0;
-    // To know the number of seconds,
-    // use properties of TickDuration.
-    // (seconds, msecs, usecs, hnsecs)
-    foreach(t; times)
-       sum += t.hnsecs;
-    writeln("Average time: ", sum/n, " hnsecs");
-}
---------------------
   +/
 @safe struct StopWatch
 {
 public:
-    //Verify Example
-    @safe unittest
-    {
-        void writeln(S...)(S args){}
-        static void bar() {}
-
-        StopWatch sw;
-        enum n = 100;
-        TickDuration[n] times;
-        TickDuration last = TickDuration.from!"seconds"(0);
-        foreach(i; 0..n)
-        {
-           sw.start(); //start/resume mesuring.
-           foreach(unused; 0..1_000_000)
-               bar();
-           sw.stop();  //stop/pause measuring.
-           //Return value of peek() after having stopped are the always same.
-           writeln((i + 1) * 1_000_000, " times done, lap time: ",
-                   sw.peek().msecs, "[ms]");
-           times[i] = sw.peek() - last;
-           last = sw.peek();
-        }
-        real sum = 0;
-        // To get the number of seconds,
-        // use properties of TickDuration.
-        // (seconds, msecs, usecs, hnsecs)
-        foreach(t; times)
-           sum += t.hnsecs;
-        writeln("Average time: ", sum/n, " hnsecs");
-    }
 
     /++
        Auto start with constructor.
@@ -29940,6 +30042,7 @@ public:
         _timeMeasured.length = 0;
     }
 
+    ///
     @safe unittest
     {
         StopWatch sw;
@@ -30087,6 +30190,37 @@ private:
     TickDuration _timeMeasured;
 }
 
+///
+@safe unittest
+{
+    void writeln(S...)(S args){}
+    static void bar() {}
+
+    StopWatch sw;
+    enum n = 100;
+    TickDuration[n] times;
+    TickDuration last = TickDuration.from!"seconds"(0);
+    foreach(i; 0..n)
+    {
+       sw.start(); //start/resume mesuring.
+       foreach(unused; 0..1_000_000)
+           bar();
+       sw.stop();  //stop/pause measuring.
+       //Return value of peek() after having stopped are the always same.
+       writeln((i + 1) * 1_000_000, " times done, lap time: ",
+               sw.peek().msecs, "[ms]");
+       times[i] = sw.peek() - last;
+       last = sw.peek();
+    }
+    real sum = 0;
+    // To get the number of seconds,
+    // use properties of TickDuration.
+    // (seconds, msecs, usecs, hnsecs)
+    foreach(t; times)
+       sum += t.hnsecs;
+    writeln("Average time: ", sum/n, " hnsecs");
+}
+
 
 /++
     Benchmarks code for speed assessment and comparison.
@@ -30205,21 +30339,6 @@ private:
        baseFunc   = The function to become the base of the speed.
        targetFunc = The function that wants to measure speed.
        times      = The number of times each function is to be executed.
-
-   Examples:
---------------------
-void f1() {
-   // ...
-}
-void f2() {
-   // ...
-}
-
-void main() {
-   auto b = comparingBenchmark!(f1, f2, 0x80);
-   writeln(b.point);
-}
---------------------
   +/
 ComparingBenchmarkResult comparingBenchmark(alias baseFunc,
                                             alias targetFunc,
@@ -30229,6 +30348,7 @@ ComparingBenchmarkResult comparingBenchmark(alias baseFunc,
     return ComparingBenchmarkResult(t[0], t[1]);
 }
 
+///
 @safe unittest
 {
     void f1x() {}
@@ -30236,17 +30356,7 @@ ComparingBenchmarkResult comparingBenchmark(alias baseFunc,
     @safe void f1o() {}
     @safe void f2o() {}
     auto b1 = comparingBenchmark!(f1o, f2o, 1)(); // OK
-    //static auto b2 = comparingBenchmark!(f1x, f2x, 1); // NG
-}
-
-unittest
-{
-    void f1x() {}
-    void f2x() {}
-    @safe void f1o() {}
-    @safe void f2o() {}
-    auto b1 = comparingBenchmark!(f1o, f2o, 1)(); // OK
-    auto b2 = comparingBenchmark!(f1x, f2x, 1)(); // OK
+    //writeln(b1.point);
 }
 
 //Bug# 8450
@@ -30272,31 +30382,87 @@ unittest
 /++
     Whether the given type defines all of the necessary functions for it to
     function as a time point.
+
+    1. $(D T) must define a static property named $(D min) which is the smallest
+       value of $(D T) as $(Unqual!T).
+
+    2. $(D T) must define a static property named $(D max) which is the largest
+       value of $(D T) as $(Unqual!T).
+
+    3. $(D T) must define an $(D opBinary) for addition and subtraction that
+       accepts $(CXREF time, Duration) and returns $(D Unqual!T).
+
+    4. $(D T) must define an $(D opOpAssign) for addition and subtraction that
+       accepts $(CXREF time, Duration) and returns $(D ref Unqual!T).
+
+    5. $(D T) must define a $(D opBinary) for subtraction which accepts $(D T)
+       and returns returns $(CXREF time, Duration).
   +/
 template isTimePoint(T)
 {
-    enum isTimePoint = hasMin!T &&
-                       hasMax!T &&
-                       hasOverloadedOpBinaryWithDuration!T &&
-                       hasOverloadedOpAssignWithDuration!T &&
-                       hasOverloadedOpBinaryWithSelf!T;
+    enum isTimePoint = hasMin &&
+                       hasMax &&
+                       hasOverloadedOpBinaryWithDuration &&
+                       hasOverloadedOpAssignWithDuration &&
+                       hasOverloadedOpBinaryWithSelf &&
+                       !is(U == Duration);
+
+private:
+
+    alias U = Unqual!T;
+
+    enum hasMin = __traits(hasMember, T, "min") &&
+                  is(typeof(T.min) == U) &&
+                  is(typeof({static assert(__traits(isStaticFunction, T.min));}));
+
+    enum hasMax = __traits(hasMember, T, "max") &&
+                  is(typeof(T.max) == U) &&
+                  is(typeof({static assert(__traits(isStaticFunction, T.max));}));
+
+    enum hasOverloadedOpBinaryWithDuration = is(typeof(T.init + Duration.init) == U) &&
+                                             is(typeof(T.init - Duration.init) == U);
+
+    enum hasOverloadedOpAssignWithDuration = is(typeof(U.init += Duration.init) == U) &&
+                                             is(typeof(U.init -= Duration.init) == U) &&
+                                             is(typeof(
+                                             {
+                                                 alias add = U.opOpAssign!("+", Duration);
+                                                 alias sub = U.opOpAssign!("-", Duration);
+                                                 alias FA = FunctionAttribute;
+                                                 static assert((functionAttributes!add & FA.ref_) != 0);
+                                                 static assert((functionAttributes!sub & FA.ref_) != 0);
+                                             }));
+
+    enum hasOverloadedOpBinaryWithSelf = is(typeof(T.init - T.init) == Duration);
+}
+
+///
+unittest
+{
+    static assert(isTimePoint!Date);
+    static assert(isTimePoint!DateTime);
+    static assert(isTimePoint!SysTime);
+    static assert(isTimePoint!TimeOfDay);
+
+    static assert(!isTimePoint!int);
+    static assert(!isTimePoint!Duration);
+    static assert(!isTimePoint!(Interval!SysTime));
 }
 
 unittest
 {
-    static assert(isTimePoint!(Date));
-    static assert(isTimePoint!(DateTime));
-    static assert(isTimePoint!(TimeOfDay));
-    static assert(isTimePoint!(SysTime));
-    static assert(isTimePoint!(const Date));
-    static assert(isTimePoint!(const DateTime));
-    static assert(isTimePoint!(const TimeOfDay));
-    static assert(isTimePoint!(const SysTime));
-    static assert(isTimePoint!(immutable Date));
-    static assert(isTimePoint!(immutable DateTime));
-    static assert(isTimePoint!(immutable TimeOfDay));
-    static assert(isTimePoint!(immutable SysTime));
+    import std.meta : AliasSeq;
+
+    foreach(TP; AliasSeq!(Date, DateTime, SysTime, TimeOfDay))
+    {
+        static assert(isTimePoint!(const TP), TP.stringof);
+        static assert(isTimePoint!(immutable TP), TP.stringof);
+    }
+
+    foreach(T; AliasSeq!(float, string, Duration, Interval!Date, PosInfInterval!Date, NegInfInterval!Date))
+        static assert(!isTimePoint!T, T.stringof);
 }
+
 
 /++
     Whether the given Gregorian Year is a leap year.
@@ -30333,80 +30499,175 @@ unittest
 }
 
 /++
-    Converts a $(D time_t) (which uses midnight, January 1st, 1970 UTC as its
-    epoch and seconds as its units) to std time (which uses midnight,
+    Converts from unix time (which uses midnight, January 1st, 1970 UTC as its
+    epoch and seconds as its units) to "std time" (which uses midnight,
     January 1st, 1 A.D. UTC and hnsecs as its units).
 
+    The C standard does not specify the representation of time_t, so it is
+    implementation defined. On POSIX systems, unix time is equivalent to
+    time_t, but that's not necessarily true on other systems (e.g. it is
+    not true for the Digital Mars C runtime). So, be careful when using unix
+    time with C functions on non-POSIX systems.
+
+    "std time"'s epoch is based on the Proleptic Gregorian Calendar per ISO
+    8601 and is what $(LREF SysTime) uses internally. However, holding the time
+    as an integer in hnescs since that epoch technically isn't actually part of
+    the standard, much as it's based on it, so the name "std time" isn't
+    particularly good, but there isn't an official name for it. C# uses "ticks"
+    for the same thing, but they aren't actually clock ticks, and the term
+    "ticks" $(I is) used for actual clock ticks for $(CXREF time, MonoTime), so
+    it didn't make sense to use the term ticks here. So, for better or worse,
+    std.datetime uses the term "std time" for this.
+
     Params:
-        unixTime = The $(D time_t) to convert.
+        unixTime = The unix time to convert.
+
+    See_Also:
+        SysTime.fromUnixTime
   +/
-long unixTimeToStdTime(time_t unixTime) @safe pure nothrow
+long unixTimeToStdTime(long unixTime) @safe pure nothrow
 {
     return 621_355_968_000_000_000L + convert!("seconds", "hnsecs")(unixTime);
+}
 
+///
+unittest
+{
+    // Midnight, January 1st, 1970
+    assert(unixTimeToStdTime(0) == 621_355_968_000_000_000L);
+    assert(SysTime(unixTimeToStdTime(0)) ==
+           SysTime(DateTime(1970, 1, 1), UTC()));
+
+    assert(unixTimeToStdTime(int.max) == 642_830_804_470_000_000L);
+    assert(SysTime(unixTimeToStdTime(int.max)) ==
+           SysTime(DateTime(2038, 1, 19, 3, 14, 07), UTC()));
+
+    assert(unixTimeToStdTime(-127_127) == 621_354_696_730_000_000L);
+    assert(SysTime(unixTimeToStdTime(-127_127)) ==
+           SysTime(DateTime(1969, 12, 30, 12, 41, 13), UTC()));
 }
 
 unittest
 {
-    assert(unixTimeToStdTime(0) == 621_355_968_000_000_000L);  //Midnight, January 1st, 1970
-    assert(unixTimeToStdTime(86_400) == 621_355_968_000_000_000L + 864_000_000_000L);  //Midnight, January 2nd, 1970
-    assert(unixTimeToStdTime(-86_400) == 621_355_968_000_000_000L - 864_000_000_000L);  //Midnight, December 31st, 1969
+    // Midnight, January 2nd, 1970
+    assert(unixTimeToStdTime(86_400) == 621_355_968_000_000_000L + 864_000_000_000L);
+    // Midnight, December 31st, 1969
+    assert(unixTimeToStdTime(-86_400) == 621_355_968_000_000_000L - 864_000_000_000L);
 
     assert(unixTimeToStdTime(0) == (Date(1970, 1, 1) - Date(1, 1, 1)).total!"hnsecs");
     assert(unixTimeToStdTime(0) == (DateTime(1970, 1, 1) - DateTime(1, 1, 1)).total!"hnsecs");
+
+    foreach(dt; [DateTime(2010, 11, 1, 19, 5, 22), DateTime(1952, 7, 6, 2, 17, 9)])
+        assert(unixTimeToStdTime((dt - DateTime(1970, 1, 1)).total!"seconds") == (dt - DateTime.init).total!"hnsecs");
 }
 
 
 /++
     Converts std time (which uses midnight, January 1st, 1 A.D. UTC as its epoch
-    and hnsecs as its units) to $(D time_t) (which uses midnight, January 1st,
-    1970 UTC as its epoch and seconds as its units). If $(D time_t) is 32 bits,
-    rather than 64, and the result can't fit in a 32-bit value, then the closest
-    value that can be held in 32 bits will be used (so $(D time_t.max) if it
-    goes over and $(D time_t.min) if it goes under).
+    and hnsecs as its units) to unix time (which uses midnight, January 1st,
+    1970 UTC as its epoch and seconds as its units).
 
-    Note:
-        While Windows systems require that $(D time_t) be non-negative (in spite
-        of $(D time_t) being signed), this function still returns negative
-        numbers on Windows, since it's more flexible to allow negative time_t
-        for those who need it. If on Windows and using the
-        standard C functions or Win32 API functions which take a $(D time_t),
-        check whether the return value of
-        $(D stdTimeToUnixTime) is non-negative.
+    The C standard does not specify the representation of time_t, so it is
+    implementation defined. On POSIX systems, unix time is equivalent to
+    time_t, but that's not necessarily true on other systems (e.g. it is
+    not true for the Digital Mars C runtime). So, be careful when using unix
+    time with C functions on non-POSIX systems.
+
+    "std time"'s epoch is based on the Proleptic Gregorian Calendar per ISO
+    8601 and is what $(LREF SysTime) uses internally. However, holding the time
+    as an integer in hnescs since that epoch technically isn't actually part of
+    the standard, much as it's based on it, so the name "std time" isn't
+    particularly good, but there isn't an official name for it. C# uses "ticks"
+    for the same thing, but they aren't actually clock ticks, and the term
+    "ticks" $(I is) used for actual clock ticks for $(CXREF time, MonoTime), so
+    it didn't make sense to use the term ticks here. So, for better or worse,
+    std.datetime uses the term "std time" for this.
+
+    By default, the return type is time_t (which is normally an alias for
+    int on 32-bit systems and long on 64-bit systems), but if a different
+    size is required than either int or long can be passed as a template
+    argument to get the desired size.
+
+    If the return type is int, and the result can't fit in an int, then the
+    closest value that can be held in 32 bits will be used (so $(D int.max)
+    if it goes over and $(D int.min) if it goes under). However, no attempt
+    is made to deal with integer overflow if the return type is long.
 
     Params:
+        T = The return type (int or long). It defaults to time_t, which is
+            normally 32 bits on a 32-bit system and 64 bits on a 64-bit
+            system.
         stdTime = The std time to convert.
+
+    Returns:
+        A signed integer representing the unix time which is equivalent to
+        the given std time.
+
+    See_Also:
+        SysTime.toUnixTime
   +/
-time_t stdTimeToUnixTime(long stdTime) @safe pure nothrow
+T stdTimeToUnixTime(T = time_t)(long stdTime) @safe pure nothrow
+    if(is(T == int) || is(T == long))
 {
     immutable unixTime = convert!("hnsecs", "seconds")(stdTime - 621_355_968_000_000_000L);
 
-    static if(time_t.sizeof >= long.sizeof)
-        return cast(time_t)unixTime;
-    else
+    static assert(is(time_t == int) || is(time_t == long),
+                  "Currently, std.datetime only supports systems where time_t is int or long");
+
+    static if(is(T == long))
+        return unixTime;
+    else static if(is(T == int))
     {
-        if(unixTime > 0)
-        {
-            if(unixTime > time_t.max)
-                return time_t.max;
-            return cast(time_t)unixTime;
-        }
-
-        if(unixTime < time_t.min)
-            return time_t.min;
-
-        return cast(time_t)unixTime;
+        if(unixTime > int.max)
+            return int.max;
+        return unixTime < int.min ? int.min : cast(int)unixTime;
     }
+    else static assert(0, "Bug in template constraint. Only int and long allowed.");
+}
+
+///
+unittest
+{
+    // Midnight, January 1st, 1970 UTC
+    assert(stdTimeToUnixTime(621_355_968_000_000_000L) == 0);
+
+    // 2038-01-19 03:14:07 UTC
+    assert(stdTimeToUnixTime(642_830_804_470_000_000L) == int.max);
 }
 
 unittest
 {
-    assert(stdTimeToUnixTime(621_355_968_000_000_000L) == 0);  //Midnight, January 1st, 1970
-    assert(stdTimeToUnixTime(621_355_968_000_000_000L + 864_000_000_000L) == 86_400);  //Midnight, January 2nd, 1970
-    assert(stdTimeToUnixTime(621_355_968_000_000_000L - 864_000_000_000L) == -86_400);  //Midnight, December 31st, 1969
+    enum unixEpochAsStdTime = (Date(1970, 1, 1) - Date.init).total!"hnsecs";
+
+    assert(stdTimeToUnixTime(unixEpochAsStdTime) == 0);  //Midnight, January 1st, 1970
+    assert(stdTimeToUnixTime(unixEpochAsStdTime + 864_000_000_000L) == 86_400);  //Midnight, January 2nd, 1970
+    assert(stdTimeToUnixTime(unixEpochAsStdTime - 864_000_000_000L) == -86_400);  //Midnight, December 31st, 1969
 
     assert(stdTimeToUnixTime((Date(1970, 1, 1) - Date(1, 1, 1)).total!"hnsecs") == 0);
     assert(stdTimeToUnixTime((DateTime(1970, 1, 1) - DateTime(1, 1, 1)).total!"hnsecs") == 0);
+
+    foreach(dt; [DateTime(2010, 11, 1, 19, 5, 22), DateTime(1952, 7, 6, 2, 17, 9)])
+        assert(stdTimeToUnixTime((dt - DateTime.init).total!"hnsecs") == (dt - DateTime(1970, 1, 1)).total!"seconds");
+
+    enum max = convert!("seconds", "hnsecs")(int.max);
+    enum min = convert!("seconds", "hnsecs")(int.min);
+    enum one = convert!("seconds", "hnsecs")(1);
+
+    assert(stdTimeToUnixTime!long(unixEpochAsStdTime + max) == int.max);
+    assert(stdTimeToUnixTime!int(unixEpochAsStdTime + max) == int.max);
+
+    assert(stdTimeToUnixTime!long(unixEpochAsStdTime + max + one) == int.max + 1L);
+    assert(stdTimeToUnixTime!int(unixEpochAsStdTime + max + one) == int.max);
+    assert(stdTimeToUnixTime!long(unixEpochAsStdTime + max + 9_999_999) == int.max);
+    assert(stdTimeToUnixTime!int(unixEpochAsStdTime + max + 9_999_999) == int.max);
+
+    assert(stdTimeToUnixTime!long(unixEpochAsStdTime + min) == int.min);
+    assert(stdTimeToUnixTime!int(unixEpochAsStdTime + min) == int.min);
+
+    assert(stdTimeToUnixTime!long(unixEpochAsStdTime + min - one) == int.min - 1L);
+    assert(stdTimeToUnixTime!int(unixEpochAsStdTime + min - one) == int.min);
+    assert(stdTimeToUnixTime!long(unixEpochAsStdTime + min - 9_999_999) == int.min);
+    assert(stdTimeToUnixTime!int(unixEpochAsStdTime + min - 9_999_999) == int.min);
 }
 
 
@@ -31073,10 +31334,10 @@ unittest
     import std.algorithm;
     import std.ascii;
     import std.format : format;
+    import std.meta;
     import std.range;
     import std.string;
     import std.typecons;
-    import std.typetuple;
 
     static struct Rand3Letters
     {
@@ -31091,10 +31352,10 @@ unittest
         static auto start() { Rand3Letters retval; retval.popFront(); return retval; }
     }
 
-    foreach(cr; TypeTuple!(function(string a){return cast(char[])a;},
-                           function(string a){return cast(ubyte[])a;},
-                           function(string a){return a;},
-                           function(string a){return map!(b => cast(char)b)(a.representation);}))
+    foreach(cr; AliasSeq!(function(string a){return cast(char[])a;},
+                          function(string a){return cast(ubyte[])a;},
+                          function(string a){return a;},
+                          function(string a){return map!(b => cast(char)b)(a.representation);}))
     (){ // avoid slow optimizations for large functions @@@BUG@@@ 2396
         scope(failure) writeln(typeof(cr).stringof);
         alias test = testParse822!cr;
@@ -31342,10 +31603,10 @@ unittest
     import std.algorithm;
     import std.ascii;
     import std.format : format;
+    import std.meta;
     import std.range;
     import std.string;
     import std.typecons;
-    import std.typetuple;
 
     auto std1 = SysTime(DateTime(2012, 12, 21, 13, 14, 15), UTC());
     auto std2 = SysTime(DateTime(2012, 12, 21, 13, 14, 0), UTC());
@@ -31356,10 +31617,10 @@ unittest
     auto tooLate1 = SysTime(Date(10_000, 1, 1), UTC());
     auto tooLate2 = SysTime(DateTime(12_007, 12, 31, 12, 22, 19), UTC());
 
-    foreach(cr; TypeTuple!(function(string a){return cast(char[])a;},
-                           function(string a){return cast(ubyte[])a;},
-                           function(string a){return a;},
-                           function(string a){return map!(b => cast(char)b)(a.representation);}))
+    foreach(cr; AliasSeq!(function(string a){return cast(char[])a;},
+                          function(string a){return cast(ubyte[])a;},
+                          function(string a){return a;},
+                          function(string a){return map!(b => cast(char)b)(a.representation);}))
     (){ // avoid slow optimizations for large functions @@@BUG@@@ 2396
         scope(failure) writeln(typeof(cr).stringof);
         alias test = testParse822!cr;
@@ -31669,9 +31930,9 @@ private int cmpTimeUnitsCTFE(string lhs, string rhs) @safe pure nothrow
 unittest
 {
     import std.format : format;
+    import std.meta;
     import std.string;
     import std.typecons;
-    import std.typetuple;
 
     static string genTest(size_t index)
     {
@@ -31688,7 +31949,7 @@ unittest
     }
 
     static assert(timeStrings.length == 10);
-    foreach(n; TypeTuple!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9))
+    foreach(n; AliasSeq!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9))
         mixin(genTest(n));
 }
 
@@ -32797,12 +33058,12 @@ R _stripCFWS(R)(R range)
 unittest
 {
     import std.algorithm;
+    import std.meta;
     import std.string;
     import std.typecons;
-    import std.typetuple;
 
-    foreach(cr; TypeTuple!(function(string a){return cast(ubyte[])a;},
-                           function(string a){return map!(b => cast(char)b)(a.representation);}))
+    foreach(cr; AliasSeq!(function(string a){return cast(ubyte[])a;},
+                          function(string a){return map!(b => cast(char)b)(a.representation);}))
     (){ // avoid slow optimizations for large functions @@@BUG@@@ 2396
         scope(failure) writeln(typeof(cr).stringof);
 
@@ -32929,170 +33190,6 @@ unittest
         scope(failure) writeln(str);
         assert(_convDigits!int(str) == -1);
     }
-}
-
-
-/+
-    Whether the given type defines the static property min which returns the
-    minimum value for the type.
-  +/
-template hasMin(T)
-{
-    enum hasMin = __traits(hasMember, T, "min") &&
-                  __traits(isStaticFunction, T.min) &&
-                  is(typeof(T.min) == Unqual!T);
-}
-
-unittest
-{
-    static assert(hasMin!(Date));
-    static assert(hasMin!(TimeOfDay));
-    static assert(hasMin!(DateTime));
-    static assert(hasMin!(SysTime));
-    static assert(hasMin!(const Date));
-    static assert(hasMin!(const TimeOfDay));
-    static assert(hasMin!(const DateTime));
-    static assert(hasMin!(const SysTime));
-    static assert(hasMin!(immutable Date));
-    static assert(hasMin!(immutable TimeOfDay));
-    static assert(hasMin!(immutable SysTime));
-}
-
-
-/+
-    Whether the given type defines the static property max which returns the
-    maximum value for the type.
-  +/
-template hasMax(T)
-{
-    enum hasMax = __traits(hasMember, T, "max") &&
-                  __traits(isStaticFunction, T.max) &&
-                  is(typeof(T.max) == Unqual!T);
-}
-
-unittest
-{
-    static assert(hasMax!(Date));
-    static assert(hasMax!(TimeOfDay));
-    static assert(hasMax!(DateTime));
-    static assert(hasMax!(SysTime));
-    static assert(hasMax!(const Date));
-    static assert(hasMax!(const TimeOfDay));
-    static assert(hasMax!(const DateTime));
-    static assert(hasMax!(const SysTime));
-    static assert(hasMax!(immutable Date));
-    static assert(hasMax!(immutable TimeOfDay));
-    static assert(hasMax!(immutable DateTime));
-    static assert(hasMax!(immutable SysTime));
-}
-
-
-/+
-    Whether the given type defines the overloaded opBinary operators that a time
-    point is supposed to define which work with time durations. Namely:
-
-    $(BOOKTABLE,
-    $(TR $(TD TimePoint opBinary"+"(duration)))
-    $(TR $(TD TimePoint opBinary"-"(duration)))
-    )
-  +/
-template hasOverloadedOpBinaryWithDuration(T)
-{
-    enum hasOverloadedOpBinaryWithDuration = __traits(compiles, T.init + dur!"days"(5)) &&
-                                             is(typeof(T.init + dur!"days"(5)) == Unqual!T) &&
-                                             __traits(compiles, T.init - dur!"days"(5)) &&
-                                             is(typeof(T.init - dur!"days"(5)) == Unqual!T) &&
-                                             __traits(compiles, T.init + TickDuration.from!"hnsecs"(5)) &&
-                                             is(typeof(T.init + TickDuration.from!"hnsecs"(5)) == Unqual!T) &&
-                                             __traits(compiles, T.init - TickDuration.from!"hnsecs"(5)) &&
-                                             is(typeof(T.init - TickDuration.from!"hnsecs"(5)) == Unqual!T);
-}
-
-unittest
-{
-    static assert(hasOverloadedOpBinaryWithDuration!(Date));
-    static assert(hasOverloadedOpBinaryWithDuration!(TimeOfDay));
-    static assert(hasOverloadedOpBinaryWithDuration!(DateTime));
-    static assert(hasOverloadedOpBinaryWithDuration!(SysTime));
-    static assert(hasOverloadedOpBinaryWithDuration!(const Date));
-    static assert(hasOverloadedOpBinaryWithDuration!(const TimeOfDay));
-    static assert(hasOverloadedOpBinaryWithDuration!(const DateTime));
-    static assert(hasOverloadedOpBinaryWithDuration!(const SysTime));
-    static assert(hasOverloadedOpBinaryWithDuration!(immutable Date));
-    static assert(hasOverloadedOpBinaryWithDuration!(immutable TimeOfDay));
-    static assert(hasOverloadedOpBinaryWithDuration!(immutable DateTime));
-    static assert(hasOverloadedOpBinaryWithDuration!(immutable SysTime));
-}
-
-
-/+
-    Whether the given type defines the overloaded opOpAssign operators that a time point is supposed
-    to define. Namely:
-
-    $(BOOKTABLE,
-    $(TR $(TD TimePoint opOpAssign"+"(duration)))
-    $(TR $(TD TimePoint opOpAssign"-"(duration)))
-    )
-  +/
-template hasOverloadedOpAssignWithDuration(T)
-{
-    enum hasOverloadedOpAssignWithDuration = is(typeof(
-    {
-        auto  d = dur!"days"(5);
-        auto td = TickDuration.from!"hnsecs"(5);
-        alias U = Unqual!T;
-        static assert(is(typeof(U.init +=  d) == U));
-        static assert(is(typeof(U.init -=  d) == U));
-        static assert(is(typeof(U.init += td) == U));
-        static assert(is(typeof(U.init -= td) == U));
-    }));
-}
-
-unittest
-{
-    static assert(hasOverloadedOpAssignWithDuration!(Date));
-    static assert(hasOverloadedOpAssignWithDuration!(TimeOfDay));
-    static assert(hasOverloadedOpAssignWithDuration!(DateTime));
-    static assert(hasOverloadedOpAssignWithDuration!(SysTime));
-    static assert(hasOverloadedOpAssignWithDuration!(const Date));
-    static assert(hasOverloadedOpAssignWithDuration!(const TimeOfDay));
-    static assert(hasOverloadedOpAssignWithDuration!(const DateTime));
-    static assert(hasOverloadedOpAssignWithDuration!(const SysTime));
-    static assert(hasOverloadedOpAssignWithDuration!(immutable Date));
-    static assert(hasOverloadedOpAssignWithDuration!(immutable TimeOfDay));
-    static assert(hasOverloadedOpAssignWithDuration!(immutable DateTime));
-    static assert(hasOverloadedOpAssignWithDuration!(immutable SysTime));
-}
-
-
-/+
-    Whether the given type defines the overloaded opBinary operator that a time point is supposed
-    to define which works with itself. Namely:
-
-    $(BOOKTABLE,
-    $(TR $(TD duration opBinary"-"(Date)))
-    )
-  +/
-template hasOverloadedOpBinaryWithSelf(T)
-{
-    enum hasOverloadedOpBinaryWithSelf = __traits(compiles, T.init - T.init) &&
-                                         is(Unqual!(typeof(T.init - T.init)) == Duration);
-}
-
-unittest
-{
-    static assert(hasOverloadedOpBinaryWithSelf!(Date));
-    static assert(hasOverloadedOpBinaryWithSelf!(TimeOfDay));
-    static assert(hasOverloadedOpBinaryWithSelf!(DateTime));
-    static assert(hasOverloadedOpBinaryWithSelf!(SysTime));
-    static assert(hasOverloadedOpBinaryWithSelf!(const Date));
-    static assert(hasOverloadedOpBinaryWithSelf!(const TimeOfDay));
-    static assert(hasOverloadedOpBinaryWithSelf!(const DateTime));
-    static assert(hasOverloadedOpBinaryWithSelf!(const SysTime));
-    static assert(hasOverloadedOpBinaryWithSelf!(immutable Date));
-    static assert(hasOverloadedOpBinaryWithSelf!(immutable TimeOfDay));
-    static assert(hasOverloadedOpBinaryWithSelf!(immutable DateTime));
-    static assert(hasOverloadedOpBinaryWithSelf!(immutable SysTime));
 }
 
 

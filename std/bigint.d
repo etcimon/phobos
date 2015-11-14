@@ -566,6 +566,87 @@ public:
     }
 
     /**
+        Implements casting to integer types.
+
+        Throws: $(XREF conv,ConvOverflowException) if the number exceeds
+        the target type's range.
+     */
+    T opCast(T:ulong)() /*pure*/ const
+    {
+        if (isUnsigned!T && sign)
+            { /* throw */ }
+        else
+        if (data.ulongLength == 1)
+        {
+            ulong l = data.peekUlong(0);
+            if (isUnsigned!T || !sign)
+            {
+                if (l <= T.max)
+                    return cast(T)l;
+            }
+            else
+            {
+                if (l <= ulong(T.max)+1)
+                    return cast(T)-long(l); // -long.min==long.min
+            }
+        }
+
+        import std.conv : ConvOverflowException;
+        import std.string : format;
+        throw new ConvOverflowException(
+            "BigInt(%d) cannot be represented as a %s"
+            .format(this, T.stringof));
+    }
+
+    ///
+    unittest
+    {
+        import std.conv : to, ConvOverflowException;
+        import std.exception : assertThrown;
+
+        assert(BigInt("0").to!int == 0);
+
+        assert(BigInt("0").to!ubyte == 0);
+        assert(BigInt("255").to!ubyte == 255);
+        assertThrown!ConvOverflowException(BigInt("256").to!ubyte);
+        assertThrown!ConvOverflowException(BigInt("-1").to!ubyte);
+    }
+
+    unittest
+    {
+        import std.conv : to, ConvOverflowException;
+        import std.exception : assertThrown;
+
+        assert(BigInt("-1").to!byte == -1);
+        assert(BigInt("-128").to!byte == -128);
+        assert(BigInt("127").to!byte == 127);
+        assertThrown!ConvOverflowException(BigInt("-129").to!byte);
+        assertThrown!ConvOverflowException(BigInt("128").to!byte);
+
+        assert(BigInt("0").to!uint == 0);
+        assert(BigInt("4294967295").to!uint == uint.max);
+        assertThrown!ConvOverflowException(BigInt("4294967296").to!uint);
+        assertThrown!ConvOverflowException(BigInt("-1").to!uint);
+
+        assert(BigInt("-1").to!int == -1);
+        assert(BigInt("-2147483648").to!int == int.min);
+        assert(BigInt("2147483647").to!int == int.max);
+        assertThrown!ConvOverflowException(BigInt("-2147483649").to!int);
+        assertThrown!ConvOverflowException(BigInt("2147483648").to!int);
+
+        assert(BigInt("0").to!ulong == 0);
+        assert(BigInt("18446744073709551615").to!ulong == ulong.max);
+        assertThrown!ConvOverflowException(BigInt("18446744073709551616").to!ulong);
+        assertThrown!ConvOverflowException(BigInt("-1").to!ulong);
+
+        assert(BigInt("-1").to!long == -1);
+        assert(BigInt("-9223372036854775808").to!long == long.min);
+        assert(BigInt("9223372036854775807").to!long == long.max);
+        assertThrown!ConvOverflowException(BigInt("-9223372036854775809").to!long);
+        assertThrown!ConvOverflowException(BigInt("9223372036854775808").to!long);
+    }
+
+    /**
         Implements casting to/from qualified BigInt's.
 
         Warning: Casting to/from $(D const) or $(D immutable) may break type
@@ -715,9 +796,19 @@ public:
         if (!(f.spec == 's' || f.spec == 'd' || hex))
             throw new FormatException("Format specifier not understood: %" ~ f.spec);
 
-        char[] buff =
-            hex ? data.toHexString(0, '_', 0, f.flZero ? '0' : ' ')
-                : data.toDecimalString(0);
+        char[] buff;
+        if (f.spec == 'X')
+        {
+            buff = data.toHexString(0, '_', 0, f.flZero ? '0' : ' ', LetterCase.upper);
+        }
+        else if (f.spec == 'x')
+        {
+            buff = data.toHexString(0, '_', 0, f.flZero ? '0' : ' ', LetterCase.lower);
+        }
+        else
+        {
+            buff = data.toDecimalString(0);
+        }
         assert(buff.length > 0);
 
         char signChar = isNegative() ? '-' : 0;
@@ -770,6 +861,7 @@ public:
         x *= 12345;
 
         assert(format("%d", x) == "12345000000");
+        assert(format("%x", x) == "2_dfd1c040");
         assert(format("%X", x) == "2_DFD1C040");
     }
 
@@ -883,14 +975,14 @@ Params:
 
 Returns:
     A $(D string) that represents the $(D BigInt) as a hexadecimal (base 16)
-    number.
+    number in upper case.
 
 */
 string toHex(const(BigInt) x)
 {
     string outbuff="";
     void sink(const(char)[] s) { outbuff ~= s; }
-    x.toString(&sink, "%x");
+    x.toString(&sink, "%X");
     return outbuff;
 }
 
@@ -1131,6 +1223,57 @@ unittest
 
     immutable string[][] table = [
     /*  fmt,        +10     -10 */
+        ["%x",      "a",    "-a"],
+        ["%+x",     "a",    "-a"],
+        ["%-x",     "a",    "-a"],
+        ["%+-x",    "a",    "-a"],
+
+        ["%4x",     "   a", "  -a"],
+        ["%+4x",    "   a", "  -a"],
+        ["%-4x",    "a   ", "-a  "],
+        ["%+-4x",   "a   ", "-a  "],
+
+        ["%04x",    "000a", "-00a"],
+        ["%+04x",   "000a", "-00a"],
+        ["%-04x",   "a   ", "-a  "],
+        ["%+-04x",  "a   ", "-a  "],
+
+        ["% 04x",   "000a", "-00a"],
+        ["%+ 04x",  "000a", "-00a"],
+        ["%- 04x",  "a   ", "-a  "],
+        ["%+- 04x", "a   ", "-a  "],
+    ];
+
+    auto w1 = appender!(char[])();
+    auto w2 = appender!(char[])();
+
+    foreach (entry; table)
+    {
+        immutable fmt = entry[0];
+
+        formattedWrite(w1, fmt, BigInt(10));
+        formattedWrite(w2, fmt, 10);
+        assert(w1.data == w2.data);     // Equal only positive BigInt
+        assert(w1.data == entry[1]);
+        w1.clear();
+        w2.clear();
+
+        formattedWrite(w1, fmt, BigInt(-10));
+        //formattedWrite(w2, fmt, -10);
+        //assert(w1.data == w2.data);
+        assert(w1.data == entry[2]);
+        w1.clear();
+        //w2.clear();
+    }
+}
+
+unittest
+{
+    import std.array;
+    import std.format;
+
+    immutable string[][] table = [
+    /*  fmt,        +10     -10 */
         ["%X",      "A",    "-A"],
         ["%+X",     "A",    "-A"],
         ["%-X",     "A",    "-A"],
@@ -1263,12 +1406,12 @@ unittest // 11148
     assert(__traits(compiles, foo(cbi)));
     assert(__traits(compiles, foo(ibi)));
 
-    import std.typetuple : TypeTuple;
+    import std.meta : AliasSeq;
     import std.conv : to;
 
-    foreach (T1; TypeTuple!(BigInt, const(BigInt), immutable(BigInt)))
+    foreach (T1; AliasSeq!(BigInt, const(BigInt), immutable(BigInt)))
     {
-        foreach (T2; TypeTuple!(BigInt, const(BigInt), immutable(BigInt)))
+        foreach (T2; AliasSeq!(BigInt, const(BigInt), immutable(BigInt)))
         {
             T1 t1 = 2;
             T2 t2 = t1;
@@ -1343,8 +1486,8 @@ unittest // 13391
     BigInt x2 = "123456789123456789";
     BigInt x3 = "123456789123456789123456789";
 
-    import std.typetuple : TypeTuple;
-    foreach (T; TypeTuple!(byte, ubyte, short, ushort, int, uint, long, ulong))
+    import std.meta : AliasSeq;
+    foreach (T; AliasSeq!(byte, ubyte, short, ushort, int, uint, long, ulong))
     {
         assert((x1 * T.max) / T.max == x1);
         assert((x2 * T.max) / T.max == x2);
@@ -1371,8 +1514,8 @@ unittest // 13391
 unittest // 13963
 {
     BigInt x = 1;
-    import std.typetuple : TypeTuple;
-    foreach(Int; TypeTuple!(byte, ubyte, short, ushort, int, uint))
+    import std.meta : AliasSeq;
+    foreach(Int; AliasSeq!(byte, ubyte, short, ushort, int, uint))
     {
         assert(is(typeof(x % Int(1)) == int));
     }
