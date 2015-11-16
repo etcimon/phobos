@@ -850,8 +850,7 @@ public:
      */
     this(Range input, Separator delimiter, Separator quote)
     {
-        _input = new Input!(Range, ErrorLevel);
-        _input.range = input;
+        _input = new Input!(Range, ErrorLevel)(input);
         _separator = delimiter;
         _quote = quote;
 
@@ -880,8 +879,7 @@ public:
      */
     this(Range input, Header colHeaders, Separator delimiter, Separator quote)
     {
-        _input = new Input!(Range, ErrorLevel);
-        _input.range = input;
+        _input = new Input!(Range, ErrorLevel)(input);
         _separator = delimiter;
         _quote = quote;
 
@@ -1082,7 +1080,7 @@ public:
                     scope(exit) colIndex++;
                     if (indices.length > 0)
                     {
-                        foreach(ti, ToType; FieldTypeTuple!(Contents))
+                        foreach(ti, ToType; Fields!(Contents))
                         {
                             if (indices[ti] == colIndex)
                             {
@@ -1093,7 +1091,7 @@ public:
                     }
                     else
                     {
-                        foreach(ti, ToType; FieldTypeTuple!(Contents))
+                        foreach(ti, ToType; Fields!(Contents))
                         {
                             if (ti == colIndex)
                             {

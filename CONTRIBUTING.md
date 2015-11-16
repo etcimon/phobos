@@ -3,6 +3,7 @@ Guidelines for Contributing
 
 Welcome to the D community and thanks for your interest in contributing!
 
+## [Starting as a Contributor](http://wiki.dlang.org/Starting_as_a_Contributor)
 ## [How to contribute pull requests?](http://wiki.dlang.org/Pull_Requests)
 ## [How to build dmd/druntime/phobos/docs?](http://wiki.dlang.org/Building_DMD)
 
@@ -24,6 +25,6 @@ Tips for Development
         rdmd -unittest -main std/regex.d
 
 2. Do not forget to test your changes.
-   Aim for a [high code coverage of your tests](http://forum.dlang.org/thread/ki5ovr$17m1$1@digitalmars.com).
+   Aim for a [high code coverage of your tests](http://forum.dlang.org/post/ki5ovr$17m1$1@digitalmars.com).
 
 3. Do not forget the [API Documentation](http://dlang.org/phobos/).

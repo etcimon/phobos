@@ -71,7 +71,7 @@ T2=$(TR $(TDNW $(LREF $1)) $(TD $+))
 module std.algorithm.mutation;
 
 import std.range.primitives;
-import std.traits : isBlitAssignable, isNarrowString;
+import std.traits : isArray, isBlitAssignable, isNarrowString, Unqual;
 // FIXME
 import std.typecons; // : tuple, Tuple;
 
@@ -101,10 +101,12 @@ Either $(D front) and $(D back) are disjoint, or $(D back) is
 reachable from $(D front) and $(D front) is not reachable from $(D
 back).
 
-Returns:
+Params:
+    front = an input range
+    back = a forward range
 
-The number of elements brought to the front, i.e., the length of $(D
-back).
+Returns:
+    The number of elements brought to the front, i.e., the length of $(D back).
 
 See_Also:
     $(WEB sgi.com/tech/stl/_rotate.html, STL's rotate)
@@ -283,70 +285,80 @@ Elements can be swapped across ranges of different types:
     }
 }
 
+// Tests if types are arrays and support slice assign.
+private enum bool areCopyCompatibleArrays(T1, T2) =
+    isArray!T1 && isArray!T2 && is(typeof(T2.init[] = T1.init[]));
+
 // copy
 /**
 Copies the content of $(D source) into $(D target) and returns the
 remaining (unfilled) part of $(D target).
 
-Preconditions: $(D target) shall have enough room to accomodate
+Preconditions: $(D target) shall have enough room to accommodate
 the entirety of $(D source).
+
+Params:
+    source = an input range
+    target = an output range
+
+Returns:
+    The unfilled part of target
 
 See_Also:
     $(WEB sgi.com/tech/stl/_copy.html, STL's _copy)
  */
 TargetRange copy(SourceRange, TargetRange)(SourceRange source, TargetRange target)
-if (isInputRange!SourceRange && isOutputRange!(TargetRange, ElementType!SourceRange))
+    if (areCopyCompatibleArrays!(SourceRange, TargetRange))
 {
-    static TargetRange genericImpl(SourceRange source, TargetRange target)
+    const tlen = target.length;
+    const slen = source.length;
+    assert(tlen >= slen,
+            "Cannot copy a source range into a smaller target range.");
+
+    immutable overlaps = () @trusted {
+        return source.ptr < target.ptr + tlen &&
+               target.ptr < source.ptr + slen; }();
+
+    if (overlaps)
     {
-        // Specialize for 2 random access ranges.
-        // Typically 2 random access ranges are faster iterated by common
-        // index then by x.popFront(), y.popFront() pair
-        static if (isRandomAccessRange!SourceRange && hasLength!SourceRange
-            && hasSlicing!TargetRange && isRandomAccessRange!TargetRange && hasLength!TargetRange)
-        {
-            assert(target.length >= source.length,
-                "Cannot copy a source range into a smaller target range.");
-
-            auto len = source.length;
-            foreach (idx; 0 .. len)
-                target[idx] = source[idx];
-            return target[len .. target.length];
-        }
-        else
-        {
-            put(target, source);
-            return target;
-        }
-    }
-
-    import std.traits : isArray;
-    static if (isArray!SourceRange && isArray!TargetRange &&
-               is(Unqual!(typeof(source[0])) == Unqual!(typeof(target[0]))))
-    {
-        immutable overlaps = () @trusted {
-            return source.ptr < target.ptr + target.length &&
-                   target.ptr < source.ptr + source.length; }();
-
-        if (overlaps)
-        {
-            return genericImpl(source, target);
-        }
-        else
-        {
-            // Array specialization.  This uses optimized memory copying
-            // routines under the hood and is about 10-20x faster than the
-            // generic implementation.
-            assert(target.length >= source.length,
-                "Cannot copy a source array into a smaller target array.");
-            target[0 .. source.length] = source[];
-
-            return target[source.length .. $];
-        }
+        foreach (idx; 0 .. slen)
+            target[idx] = source[idx];
+        return target[slen .. tlen];
     }
     else
     {
-        return genericImpl(source, target);
+        // Array specialization.  This uses optimized memory copying
+        // routines under the hood and is about 10-20x faster than the
+        // generic implementation.
+        target[0 .. slen] = source[];
+        return target[slen .. $];
+    }
+}
+
+/// ditto
+TargetRange copy(SourceRange, TargetRange)(SourceRange source, TargetRange target)
+    if (!areCopyCompatibleArrays!(SourceRange, TargetRange) &&
+        isInputRange!SourceRange &&
+        isOutputRange!(TargetRange, ElementType!SourceRange))
+{
+    // Specialize for 2 random access ranges.
+    // Typically 2 random access ranges are faster iterated by common
+    // index than by x.popFront(), y.popFront() pair
+    static if (isRandomAccessRange!SourceRange &&
+               hasLength!SourceRange &&
+               hasSlicing!TargetRange &&
+               isRandomAccessRange!TargetRange &&
+               hasLength!TargetRange)
+    {
+        auto len = source.length;
+        foreach (idx; 0 .. len)
+            target[idx] = source[idx];
+        return target[len .. $];
+    }
+    else
+    {
+        put(target, source);
+        return target;
     }
 }
 
@@ -442,6 +454,20 @@ $(WEB sgi.com/tech/stl/copy_backward.html, STL's copy_backward'):
             copy(arr1, arr2);
             return 35;
         }();
+    }
+}
+
+@safe unittest
+{
+    // Issue 13650
+    import std.meta : AliasSeq;
+    foreach (Char; AliasSeq!(char, wchar, dchar))
+    {
+        Char[3] a1 = "123";
+        Char[6] a2 = "456789";
+        assert(copy(a1[], a2[]) is a2[3..$]);
+        assert(a1[] == "123");
+        assert(a2[] == "123789");
     }
 }
 
@@ -691,14 +717,6 @@ Params:
 See_Also:
         $(LREF fill)
         $(LREF uninitializeFill)
-
-Example:
-----
-struct S { ... }
-S[] s = (cast(S*) malloc(5 * S.sizeof))[0 .. 5];
-initializeAll(s);
-assert(s == [ 0, 0, 0, 0, 0 ]);
-----
  */
 void initializeAll(Range)(Range range)
     if (isInputRange!Range && hasLvalueElements!Range && hasAssignableElements!Range)
@@ -729,7 +747,7 @@ void initializeAll(Range)(Range range)
         fill(range, T.init);
 }
 
-// ditto
+/// ditto
 void initializeAll(Range)(Range range)
     if (is(Range == char[]) || is(Range == wchar[]))
 {
@@ -737,11 +755,28 @@ void initializeAll(Range)(Range range)
     range[] = T.init;
 }
 
+///
+unittest
+{
+    import core.stdc.stdlib: malloc, free;
+
+    struct S
+    {
+        int a = 10;
+    }
+
+    auto s = (cast(S*) malloc(5 * S.sizeof))[0 .. 5];
+    initializeAll(s);
+    assert(s == [S(10), S(10), S(10), S(10), S(10)]);
+
+    scope(exit) free(s.ptr);
+}
+
 unittest
 {
     import std.algorithm.iteration : filter;
+    import std.meta : AliasSeq;
     import std.traits : hasElaborateAssign;
-    import std.typetuple : TypeTuple;
 
     debug(std_algorithm) scope(success)
         writeln("unittest @", __FILE__, ":", __LINE__, " done.");
@@ -792,7 +827,7 @@ unittest
     assert (!typeid(S3).init().ptr);
     assert ( typeid(S4).init().ptr);
 
-    foreach(S; TypeTuple!(S1, S2, S3, S4))
+    foreach(S; AliasSeq!(S1, S2, S3, S4))
     {
         //initializeAll
         {
@@ -838,52 +873,11 @@ Params:
 */
 void move(T)(ref T source, ref T target)
 {
-    import core.stdc.string : memcpy, memset;
-    import std.traits : hasAliasing, hasElaborateAssign,
-                        hasElaborateCopyConstructor, hasElaborateDestructor,
-                        isAssignable;
-
-    static if (!is( T == class) && hasAliasing!T) if (!__ctfe)
-    {
-        import std.exception : doesPointTo;
-        assert(!doesPointTo(source, source), "Cannot move object with internal pointer.");
-    }
-
-    static if (is(T == struct))
-    {
-        if (&source == &target) return;
-        // Most complicated case. Destroy whatever target had in it
-        // and bitblast source over it
-        static if (hasElaborateDestructor!T) typeid(T).destroy(&target);
-
-        static if (hasElaborateAssign!T || !isAssignable!T)
-            memcpy(&target, &source, T.sizeof);
-        else
-            target = source;
-
-        // If the source defines a destructor or a postblit hook, we must obliterate the
-        // object in order to avoid double freeing and undue aliasing
-        static if (hasElaborateDestructor!T || hasElaborateCopyConstructor!T)
-        {
-            // If T is nested struct, keep original context pointer
-            static if (__traits(isNested, T))
-                enum sz = T.sizeof - (void*).sizeof;
-            else
-                enum sz = T.sizeof;
-
-            auto init = typeid(T).init();
-            if (init.ptr is null) // null ptr means initialize to 0s
-                memset(&source, 0, sz);
-            else
-                memcpy(&source, init.ptr, sz);
-        }
-    }
+    // test @safe destructible
+    static if (__traits(compiles, (T t) @safe {}))
+        trustedMoveImpl(source, target);
     else
-    {
-        // Primitive data (including pointers and arrays) or class -
-        // assignment works great
-        target = source;
-    }
+        moveImpl(source, target);
 }
 
 ///
@@ -898,7 +892,7 @@ unittest
 }
 
 ///
-unittest
+pure nothrow @safe @nogc unittest
 {
     // Structs without destructors are simply copied
     struct S1
@@ -921,7 +915,7 @@ unittest
         int a = 1;
         int b = 2;
 
-        ~this() { }
+        ~this() pure nothrow @safe @nogc { }
     }
     S2 s21 = { 3, 4 };
     S2 s22;
@@ -995,49 +989,53 @@ unittest
 /// Ditto
 T move(T)(ref T source)
 {
-    import core.stdc.string : memcpy, memset;
-    import std.traits : hasAliasing, hasElaborateAssign,
-                        hasElaborateCopyConstructor, hasElaborateDestructor,
-                        isAssignable;
+    // test @safe destructible
+    static if (__traits(compiles, (T t) @safe {}))
+        return trustedMoveImpl(source);
+    else
+        return moveImpl(source);
+}
 
-    static if (!is(T == class) && hasAliasing!T) if (!__ctfe)
+///
+pure nothrow @safe @nogc unittest
+{
+    struct S
     {
-        import std.exception : doesPointTo;
-        assert(!doesPointTo(source, source), "Cannot move object with internal pointer.");
+        @disable this(this);
+        ~this() pure nothrow @safe @nogc {}
     }
+    S s1;
+    S s2 = move(s1);
+}
 
-    T result = void;
+private void trustedMoveImpl(T)(ref T source, ref T target) @trusted
+{
+    moveImpl(source, target);
+}
+
+private void moveImpl(T)(ref T source, ref T target)
+{
+    import std.traits : hasElaborateDestructor;
+
     static if (is(T == struct))
     {
-        // Can avoid destructing result.
-        static if (hasElaborateAssign!T || !isAssignable!T)
-            memcpy(&result, &source, T.sizeof);
-        else
-            result = source;
-
-        // If the source defines a destructor or a postblit hook, we must obliterate the
-        // object in order to avoid double freeing and undue aliasing
-        static if (hasElaborateDestructor!T || hasElaborateCopyConstructor!T)
-        {
-            // If T is nested struct, keep original context pointer
-            static if (__traits(isNested, T))
-                enum sz = T.sizeof - (void*).sizeof;
-            else
-                enum sz = T.sizeof;
-
-            auto init = typeid(T).init();
-            if (init.ptr is null) // null ptr means initialize to 0s
-                memset(&source, 0, sz);
-            else
-                memcpy(&source, init.ptr, sz);
-        }
+        if (&source == &target) return;
+        // Destroy target before overwriting it
+        static if (hasElaborateDestructor!T) target.__xdtor();
     }
-    else
-    {
-        // Primitive data (including pointers and arrays) or class -
-        // assignment works great
-        result = source;
-    }
+    // move and emplace source into target
+    moveEmplace(source, target);
+}
+
+private T trustedMoveImpl(T)(ref T source) @trusted
+{
+    return moveImpl(source);
+}
+
+private T moveImpl(T)(ref T source)
+{
+    T result = void;
+    moveEmplace(source, result);
     return result;
 }
 
@@ -1097,6 +1095,16 @@ unittest
     S5 s51;
     static assert(__traits(compiles, s51 = move(s51)),
                   "issue 13990, cannot move opaque class reference");
+}
+
+unittest
+{
+    static struct S { ~this() @system { } }
+    S a, b;
+    static assert(!__traits(compiles, () @safe { move(a, b); }));
+    static assert(!__traits(compiles, () @safe { move(a); }));
+    static assert(__traits(compiles, () @trusted { move(a, b); }));
+    static assert(__traits(compiles, () @trusted { move(a); }));
 }
 
 unittest//Issue 6217
@@ -1162,6 +1170,84 @@ unittest// Issue 8057
     static assert(__traits(compiles, move(x, x) ));
 }
 
+/**
+ * Similar to $(LREF move) but assumes `target` is uninitialized. This
+ * is more efficient because `source` can be blitted over `target`
+ * without destroying or initializing it first.
+ *
+ * Params:
+ *   source = value to be moved into target
+ *   target = uninitialized value to be filled by source
+ */
+void moveEmplace(T)(ref T source, ref T target) @system
+{
+    import core.stdc.string : memcpy, memset;
+    import std.traits : hasAliasing, hasElaborateAssign,
+                        hasElaborateCopyConstructor, hasElaborateDestructor,
+                        isAssignable;
+
+    static if (!is(T == class) && hasAliasing!T) if (!__ctfe)
+    {
+        import std.exception : doesPointTo;
+        assert(!doesPointTo(source, source), "Cannot move object with internal pointer.");
+    }
+
+    static if (is(T == struct))
+    {
+        assert(&source !is &target, "source and target must not be identical");
+
+        static if (hasElaborateAssign!T || !isAssignable!T)
+            memcpy(&target, &source, T.sizeof);
+        else
+            target = source;
+
+        // If the source defines a destructor or a postblit hook, we must obliterate the
+        // object in order to avoid double freeing and undue aliasing
+        static if (hasElaborateDestructor!T || hasElaborateCopyConstructor!T)
+        {
+            // If T is nested struct, keep original context pointer
+            static if (__traits(isNested, T))
+                enum sz = T.sizeof - (void*).sizeof;
+            else
+                enum sz = T.sizeof;
+
+            auto init = typeid(T).init();
+            if (init.ptr is null) // null ptr means initialize to 0s
+                memset(&source, 0, sz);
+            else
+                memcpy(&source, init.ptr, sz);
+        }
+    }
+    else
+    {
+        // Primitive data (including pointers and arrays) or class -
+        // assignment works great
+        target = source;
+    }
+}
+
+///
+pure nothrow @nogc unittest
+{
+    static struct Foo
+    {
+    pure nothrow @nogc:
+        this(int* ptr) { _ptr = ptr; }
+        ~this() { if (_ptr) ++*_ptr; }
+        int* _ptr;
+    }
+
+    int val;
+    Foo foo1 = void; // uninitialized
+    auto foo2 = Foo(&val); // initialized
+
+    // Using `move(foo2, foo1)` has an undefined effect because it destroys the uninitialized foo1.
+    // MoveEmplace directly overwrites foo1 without destroying or initializing it first.
+    assert(foo2._ptr is &val);
+    moveEmplace(foo2, foo1);
+    assert(foo1._ptr is &val && foo2._ptr is null);
+}
+
 // moveAll
 /**
 For each element $(D a) in $(D src) and each element $(D b) in $(D
@@ -1169,8 +1255,8 @@ tgt) in lockstep in increasing order, calls $(D move(a, b)).
 
 Preconditions:
 $(D walkLength(src) <= walkLength(tgt)).
-An exception will be thrown if this condition does not hold, i.e., there is not
-enough room in $(D tgt) to accommodate all of $(D src).
+This precondition will be asserted. If you cannot ensure there is enough room in
+`tgt` to accommodate all of `src` use $(LREF moveSome) instead.
 
 Params:
     src = An $(XREF_PACK_NAMED range,primitives,isInputRange,input range) with
@@ -1185,36 +1271,92 @@ Range2 moveAll(Range1, Range2)(Range1 src, Range2 tgt)
 if (isInputRange!Range1 && isInputRange!Range2
         && is(typeof(move(src.front, tgt.front))))
 {
+    return moveAllImpl!move(src, tgt);
+}
+
+///
+pure nothrow @safe @nogc unittest
+{
+    int[3] a = [ 1, 2, 3 ];
+    int[5] b;
+    assert(moveAll(a[], b[]) is b[3 .. $]);
+    assert(a[] == b[0 .. 3]);
+    int[3] cmp = [ 1, 2, 3 ];
+    assert(a[] == cmp[]);
+}
+
+/**
+ * Similar to $(LREF moveAll) but assumes all elements in `target` are
+ * uninitialized. Uses $(LREF moveEmplace) to move elements from
+ * `source` over elements from `target`.
+ */
+Range2 moveEmplaceAll(Range1, Range2)(Range1 src, Range2 tgt) @system
+if (isInputRange!Range1 && isInputRange!Range2
+        && is(typeof(moveEmplace(src.front, tgt.front))))
+{
+    return moveAllImpl!moveEmplace(src, tgt);
+}
+
+///
+pure nothrow @nogc unittest
+{
+    static struct Foo
+    {
+        ~this() pure nothrow @nogc { if (_ptr) ++*_ptr; }
+        int* _ptr;
+    }
+    int[3] refs = [0, 1, 2];
+    Foo[3] src = [Foo(&refs[0]), Foo(&refs[1]), Foo(&refs[2])];
+    Foo[5] dst = void;
+
+    auto tail = moveEmplaceAll(src[], dst[]); // move 3 value from src over dst
+    assert(tail.length == 2); // returns remaining uninitialized values
+    initializeAll(tail);
+
+    import std.algorithm.searching : all;
+    assert(src[].all!(e => e._ptr is null));
+    assert(dst[0 .. 3].all!(e => e._ptr !is null));
+}
+
+unittest
+{
+    struct InputRange
+    {
+        ref int front() { return data[0]; }
+        void popFront() { data.popFront; }
+        bool empty() { return data.empty; }
+        int[] data;
+    }
+    auto a = InputRange([ 1, 2, 3 ]);
+    auto b = InputRange(new int[5]);
+    moveAll(a, b);
+    assert(a.data == b.data[0 .. 3]);
+    assert(a.data == [ 1, 2, 3 ]);
+}
+
+private Range2 moveAllImpl(alias moveOp, Range1, Range2)(
+    ref Range1 src, ref Range2 tgt)
+{
     import std.exception : enforce;
 
     static if (isRandomAccessRange!Range1 && hasLength!Range1 && hasLength!Range2
          && hasSlicing!Range2 && isRandomAccessRange!Range2)
     {
         auto toMove = src.length;
-        enforce(toMove <= tgt.length);  // shouldn't this be an assert?
+        assert(toMove <= tgt.length);
         foreach (idx; 0 .. toMove)
-            move(src[idx], tgt[idx]);
+            moveOp(src[idx], tgt[idx]);
         return tgt[toMove .. tgt.length];
     }
     else
     {
         for (; !src.empty; src.popFront(), tgt.popFront())
         {
-            enforce(!tgt.empty);  //ditto?
-            move(src.front, tgt.front);
+            assert(!tgt.empty);
+            moveOp(src.front, tgt.front);
         }
         return tgt;
     }
-}
-
-///
-unittest
-{
-    int[] a = [ 1, 2, 3 ];
-    int[] b = new int[5];
-    assert(moveAll(a, b) is b[3 .. $]);
-    assert(a == b[0 .. 3]);
-    assert(a == [ 1, 2, 3 ]);
 }
 
 // moveSome
@@ -1236,25 +1378,59 @@ Tuple!(Range1, Range2) moveSome(Range1, Range2)(Range1 src, Range2 tgt)
 if (isInputRange!Range1 && isInputRange!Range2
         && is(typeof(move(src.front, tgt.front))))
 {
-    import std.exception : enforce;
-
-    for (; !src.empty && !tgt.empty; src.popFront(), tgt.popFront())
-    {
-        enforce(!tgt.empty);
-        move(src.front, tgt.front);
-    }
-    return tuple(src, tgt);
+    return moveSomeImpl!move(src, tgt);
 }
 
 ///
-unittest
+pure nothrow @safe @nogc unittest
 {
-    int[] a = [ 1, 2, 3, 4, 5 ];
-    int[] b = new int[3];
-    assert(moveSome(a, b)[0] is a[3 .. $]);
+    int[5] a = [ 1, 2, 3, 4, 5 ];
+    int[3] b;
+    assert(moveSome(a[], b[])[0] is a[3 .. $]);
     assert(a[0 .. 3] == b);
     assert(a == [ 1, 2, 3, 4, 5 ]);
 }
+
+/**
+ * Same as $(LREF moveSome) but assumes all elements in `target` are
+ * uninitialized. Uses $(LREF moveEmplace) to move elements from
+ * `source` over elements from `target`.
+ */
+Tuple!(Range1, Range2) moveEmplaceSome(Range1, Range2)(Range1 src, Range2 tgt) @system
+if (isInputRange!Range1 && isInputRange!Range2
+        && is(typeof(move(src.front, tgt.front))))
+{
+    return moveSomeImpl!moveEmplace(src, tgt);
+}
+
+///
+pure nothrow @nogc unittest
+{
+    static struct Foo
+    {
+        ~this() pure nothrow @nogc { if (_ptr) ++*_ptr; }
+        int* _ptr;
+    }
+    int[4] refs = [0, 1, 2, 3];
+    Foo[4] src = [Foo(&refs[0]), Foo(&refs[1]), Foo(&refs[2]), Foo(&refs[3])];
+    Foo[3] dst = void;
+
+    auto res = moveEmplaceSome(src[], dst[]);
+
+    import std.algorithm.searching : all;
+    assert(src[0 .. 3].all!(e => e._ptr is null));
+    assert(src[3]._ptr !is null);
+    assert(dst[].all!(e => e._ptr !is null));
+}
+
+private Tuple!(Range1, Range2) moveSomeImpl(alias moveOp, Range1, Range2)(
+    ref Range1 src, ref Range2 tgt)
+{
+    for (; !src.empty && !tgt.empty; src.popFront(), tgt.popFront())
+        moveOp(src.front, tgt.front);
+    return tuple(src, tgt);
+ }
+
 
 // SwapStrategy
 /**
@@ -1380,6 +1556,14 @@ calls to $(D range.popFront).)  $(LI Otherwise, elements are moved
 incrementally towards the front of $(D range); a given element is never
 moved several times, but more elements are moved than in the previous
 cases.))
+
+Params:
+    s = a SwapStrategy to determine if the original order needs to be preserved
+    range = a bidirectional range with a length member
+    offset = which element(s) to remove
+
+Returns:
+    a range containing all of the elements of range with offset removed
  */
 Range remove
 (SwapStrategy s = SwapStrategy.stable, Range, Offset...)
@@ -1601,6 +1785,13 @@ elements are moved from the right end of the range over the elements
 to eliminate. If $(D s = SwapStrategy.stable) (the default),
 elements are moved progressively to front such that their relative
 order is preserved. Returns the filtered range.
+
+Params:
+    range = a bidirectional ranges with lvalue elements
+
+Returns:
+    the range with all of the elements where $(D pred) is $(D true)
+    removed
 */
 Range remove(alias pred, SwapStrategy s = SwapStrategy.stable, Range)
 (Range range)
@@ -1679,6 +1870,9 @@ if (isBidirectionalRange!Range
 Reverses $(D r) in-place.  Performs $(D r.length / 2) evaluations of $(D
 swap).
 
+Params:
+    r = a bidirectional range with swappable elements or a random access range with a length member
+
 See_Also:
     $(WEB sgi.com/tech/stl/_reverse.html, STL's _reverse)
 */
@@ -1737,6 +1931,15 @@ if (isRandomAccessRange!Range && hasLength!Range)
 Reverses $(D r) in-place, where $(D r) is a narrow string (having
 elements of type $(D char) or $(D wchar)). UTF sequences consisting of
 multiple code units are preserved properly.
+
+Params:
+    s = a narrow string
+
+Bugs:
+    When passing a sting with unicode modifiers on characters, such as $(D \u0301),
+    this function will not properly keep the position of the modifier. For example,
+    reversing $(D ba\u0301d) ("bád") will result in d\u0301ab ("d́ab") instead of
+    $(D da\u0301b) ("dáb").
 */
 void reverse(Char)(Char[] s)
 if (isNarrowString!(Char[]) && !is(Char == const) && !is(Char == immutable))
@@ -1821,6 +2024,13 @@ void swapAt(R)(R r, size_t i1, size_t i2)
     where the range will be stripped as long as this element can be found.
     The other takes a lambda predicate, where the range will be stripped as
     long as the predicate returns true.
+
+    Params:
+        range = a bidirectional or input range
+        element = the elements to remove
+
+    Returns:
+        a Range with all of range except element at the start and end
 */
 Range strip(Range, E)(Range range, E element)
     if (isBidirectionalRange!Range && is(typeof(range.front == element) : bool))
@@ -1960,11 +2170,11 @@ if (isBlitAssignable!T && !is(typeof(lhs.proxySwap(rhs))))
     static if (hasAliasing!T) if (!__ctfe)
     {
         import std.exception : doesPointTo;
-        assert(!doesPointTo(lhs, lhs), "Swap: lhs internal pointer.");
+        /*assert(!doesPointTo(lhs, lhs), "Swap: lhs internal pointer.");
         assert(!doesPointTo(rhs, rhs), "Swap: rhs internal pointer.");
         assert(!doesPointTo(lhs, rhs), "Swap: lhs points to rhs.");
         assert(!doesPointTo(rhs, lhs), "Swap: rhs points to lhs.");
-    }
+   */ }
 
     static if (hasElaborateAssign!T || !isAssignable!T)
     {
@@ -2191,6 +2401,15 @@ Returns a tuple containing the remainder portions of $(D r1) and $(D
 r2) that were not swapped (one of them will be empty). The ranges may
 be of different types but must have the same element type and support
 swapping.
+
+Params:
+    r1 = an $(XREF_PACK_NAMED _range,primitives,isInputRange,input _range)
+         with swappable elements
+    r2 = an $(XREF_PACK_NAMED _range,primitives,isInputRange,input _range)
+         with swappable elements
+
+Returns:
+    Tuple containing the remainder portions of r1 and r2 that were not swapped
 */
 Tuple!(Range1, Range2)
 swapRanges(Range1, Range2)(Range1 r1, Range2 r2)
@@ -2233,14 +2452,6 @@ Params:
 See_Also:
         $(LREF fill)
         $(LREF initializeAll)
-
-Example:
-----
-struct S { ... }
-S[] s = (cast(S*) malloc(5 * S.sizeof))[0 .. 5];
-uninitializedFill(s, 42);
-assert(s == [ 42, 42, 42, 42, 42 ]);
-----
  */
 void uninitializedFill(Range, Value)(Range range, Value value)
     if (isInputRange!Range && hasLvalueElements!Range && is(typeof(range.front = value)))
@@ -2259,4 +2470,16 @@ void uninitializedFill(Range, Value)(Range range, Value value)
     else
         // Doesn't matter whether fill is initialized or not
         return fill(range, value);
+}
+
+///
+nothrow unittest
+{
+    import core.stdc.stdlib : malloc, free;
+
+    auto s = (cast(int*) malloc(5 * int.sizeof))[0 .. 5];
+    uninitializedFill(s, 42);
+    assert(s == [ 42, 42, 42, 42, 42 ]);
+
+    scope(exit) free(s.ptr);
 }
