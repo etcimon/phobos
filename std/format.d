@@ -657,18 +657,11 @@ unittest
     assert(isNaN(z));
 }
 
-template FormatSpec(Char)
-    if (!is(Unqual!Char == Char))
-{
-    alias FormatSpec = FormatSpec!(Unqual!Char);
-}
-
 /**
  * A General handler for $(D printf) style format specifiers. Used for building more
  * specific formatting functions.
  */
 struct FormatSpec(Char)
-    if (is(Unqual!Char == Char))
 {
     import std.ascii : isDigit;
     import std.algorithm : startsWith;

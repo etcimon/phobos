@@ -2180,11 +2180,11 @@ if (isBlitAssignable!T && !is(typeof(lhs.proxySwap(rhs))))
     static if (hasAliasing!T) if (!__ctfe)
     {
         import std.exception : doesPointTo;
-        assert(!doesPointTo(lhs, lhs), "Swap: lhs internal pointer.");
+        /*assert(!doesPointTo(lhs, lhs), "Swap: lhs internal pointer.");
         assert(!doesPointTo(rhs, rhs), "Swap: rhs internal pointer.");
         assert(!doesPointTo(lhs, rhs), "Swap: lhs points to rhs.");
         assert(!doesPointTo(rhs, lhs), "Swap: rhs points to lhs.");
-    }
+   */ }
 
     static if (hasElaborateAssign!T || !isAssignable!T)
     {

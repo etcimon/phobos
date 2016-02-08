@@ -2382,7 +2382,7 @@ public:
     }
 
     ///
-    unittest
+  /*  unittest
     {
         import std.conv : to;
         import std.format : format;
@@ -2399,7 +2399,7 @@ public:
 
         assert(format("%#X", unicode.Cyrillic) ==
             "[0X400..0X485) [0X487..0X528) [0X1D2B..0X1D2C) [0X1D78..0X1D79) [0X2DE0..0X2E00) [0XA640..0XA698) [0XA69F..0XA6A0)");
-    }
+    }*/
 
     unittest
     {

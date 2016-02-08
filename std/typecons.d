@@ -4783,7 +4783,7 @@ Assignment operators
         @property nothrow @safe pure @nogc
         ref inout(T) refCountedPayload() inout return
         {
-            assert(_refCounted.isInitialized, "Attempted to access an uninitialized payload.");
+            //assert(_refCounted.isInitialized, "Attempted to access an uninitialized payload.");
             return _refCounted._store._payload;
         }
     }
