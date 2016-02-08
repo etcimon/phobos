@@ -1,4 +1,4 @@
-// Written in the D programming language.
+﻿// Written in the D programming language.
 
 /**
 Standard I/O functions that extend $(B core.stdc.stdio).  $(B core.stdc.stdio)
@@ -275,7 +275,7 @@ public:
         import std.format : formattedRead;
         import std.string : chomp;
 
-        enforce(file.isOpen);
+        enforce(file.isOpen, "ByRecord: File must be open");
         file.readln(line);
         if (!line.length)
         {
@@ -314,7 +314,7 @@ automatically closed.
 Example:
 ----
 // test.d
-void main(string args[])
+void main(string[] args)
 {
     auto f = File("test.txt", "w"); // open for writing
     f.write("Hello");
@@ -330,12 +330,12 @@ void main(string args[])
     // underlying $(D FILE*) is closed.
 }
 ----
-<pre class=console>
+$(CONSOLE
 % rdmd test.d Jimmy
 % cat test.txt
 Hello, Jimmy!
 % __
-</pre>
+)
  */
 struct File
 {
@@ -378,9 +378,9 @@ object refers to it anymore.
 
 Params:
     name = range or string representing the file _name
-    stdioOpenMode = range or string represting the open mode
-        (with the same semantics as in the C standard library $(WEB
-        cplusplus.com/reference/clibrary/cstdio/fopen.html, fopen)
+    stdioOpenmode = range or string represting the open mode
+        (with the same semantics as in the C standard library
+        $(WEB cplusplus.com/reference/clibrary/cstdio/fopen.html, fopen)
         function)
 
 Throws: $(D ErrnoException) if the file could not be opened.
@@ -802,7 +802,7 @@ $(D rawRead) always reads in binary mode on Windows.
  */
     T[] rawRead(T)(T[] buffer)
     {
-        import std.exception : Exception, errnoEnforce;
+        import std.exception : errnoEnforce;
 
         if (!buffer.length)
             throw new Exception("rawRead must take a non-empty buffer");
@@ -1413,12 +1413,12 @@ void main()
     {
         static import std.file;
         import std.algorithm : equal;
-        import std.typetuple : TypeTuple;
+        import std.meta : AliasSeq;
 
         auto deleteme = testFilename();
         std.file.write(deleteme, "hello\nworld\n");
         scope(exit) std.file.remove(deleteme);
-        foreach (String; TypeTuple!(string, char[], wstring, wchar[], dstring, dchar[]))
+        foreach (String; AliasSeq!(string, char[], wstring, wchar[], dstring, dchar[]))
         {
             auto witness = [ "hello\n", "world\n" ];
             auto f = File(deleteme);
@@ -1560,6 +1560,45 @@ is recommended if you want to process a complete file.
         }
     }
 
+    unittest
+    {
+        static import std.file;
+        auto deleteme = testFilename();
+        std.file.write(deleteme, "123\n456789");
+        scope(exit) std.file.remove(deleteme);
+
+        auto file = File(deleteme);
+        char[] buffer = new char[10];
+        char[] line = buffer;
+        file.readln(line);
+        auto beyond = line.length;
+        buffer[beyond] = 'a';
+        file.readln(line); // should not write buffer beyond line
+        assert(buffer[beyond] == 'a');
+    }
+
+    unittest // bugzilla 15293
+    {
+        static import std.file;
+        auto deleteme = testFilename();
+        std.file.write(deleteme, "a\n\naa");
+        scope(exit) std.file.remove(deleteme);
+
+        auto file = File(deleteme);
+        char[] buffer;
+        char[] line;
+
+        file.readln(buffer, '\n');
+
+        line = buffer;
+        file.readln(line, '\n');
+
+        line = buffer;
+        file.readln(line, '\n');
+
+        assert(line[0 .. 1].capacity == 0);
+    }
+
 /** ditto */
     size_t readln(C, R)(ref C[] buf, R terminator)
     if (isSomeChar!C && is(Unqual!C == C) && !is(C == enum) &&
@@ -1610,8 +1649,8 @@ is recommended if you want to process a complete file.
 
     /**
      * Read data from the file according to the specified
-     * $(LINK2 std_format.html#format-string, format specifier) using
-     * $(XREF format,formattedRead).
+     * $(LINK2 std_format.html#_format-string, format specifier) using
+     * $(XREF _format,formattedRead).
      */
     uint readf(Data...)(in char[] format, Data data)
     {
@@ -1903,8 +1942,8 @@ the contents may well have changed).
         std.file.write(deleteme, "hi");
         scope(success) std.file.remove(deleteme);
 
-        import std.typetuple;
-        foreach (T; TypeTuple!(char, wchar, dchar))
+        import std.meta : AliasSeq;
+        foreach (T; AliasSeq!(char, wchar, dchar))
         {
             auto blc = File(deleteme).byLine!(T, T);
             assert(blc.front == "hi");
@@ -2504,13 +2543,13 @@ $(D Range) that locks the file and allows fast writing to it.
         /// ditto
         void put(C)(C c) @safe if (is(C : const(dchar)))
         {
-            import std.traits : ParameterTypeTuple;
+            import std.traits : Parameters;
             static auto trustedFPUTC(int ch, _iobuf* h) @trusted
             {
 				if (!h) return ch;
                 return FPUTC(ch, h);
             }
-            static auto trustedFPUTWC(ParameterTypeTuple!FPUTWC[0] ch, _iobuf* h) @trusted
+            static auto trustedFPUTWC(Parameters!FPUTWC[0] ch, _iobuf* h) @trusted
             {
 				if (!h) return ch;
                 return FPUTWC(ch, h);
@@ -2818,15 +2857,15 @@ enum LockType
 struct LockingTextReader
 {
     private File _f;
-    private dchar _front;
+    private char _front;
+    private bool _hasChar;
 
     this(File f)
     {
         import std.exception : enforce;
-        enforce(f.isOpen);
+        enforce(f.isOpen, "LockingTextReader: File must be open");
         _f = f;
         FLOCK(_f._p.handle);
-        readFront();
     }
 
     this(this)
@@ -2836,6 +2875,9 @@ struct LockingTextReader
 
     ~this()
     {
+        if (_hasChar)
+            ungetc(_front, cast(FILE*)_f._p.handle);
+
         // File locking has its own reference count
         if (_f.isOpen) FUNLOCK(_f._p.handle);
     }
@@ -2848,92 +2890,46 @@ struct LockingTextReader
 
     @property bool empty()
     {
-        return !_f.isOpen || _f.eof;
+        if (!_hasChar)
+        {
+            if (!_f.isOpen || _f.eof)
+                return true;
+            immutable int c = FGETC(cast(_iobuf*) _f._p.handle);
+            if (c == EOF)
+            {
+                .destroy(_f);
+                return true;
+            }
+            _front = cast(char)c;
+            _hasChar = true;
+        }
+        return false;
     }
 
-    @property dchar front()
+    @property char front()
     {
-        version(assert)
+        if (!_hasChar)
         {
-            import core.exception : RangeError;
-            if (empty)
-                throw new RangeError();
+            version(assert)
+            {
+                import core.exception : RangeError;
+                if (empty)
+                    throw new RangeError();
+            }
+            else
+            {
+                empty;
+            }
         }
         return _front;
     }
 
-    /* Read a utf8 sequence from the file, removing the chars from the stream.
-    Returns an empty result when at EOF. */
-    private char[] takeFront(return ref char[4] buf)
-    {
-        import std.utf : stride, UTFException;
-        {
-            immutable int c = FGETC(cast(_iobuf*) _f._p.handle);
-            if (c == EOF)
-                return buf[0 .. 0];
-            buf[0] = cast(char) c;
-        }
-        immutable seqLen = stride(buf[]);
-        foreach(ref u; buf[1 .. seqLen])
-        {
-            immutable int c = FGETC(cast(_iobuf*) _f._p.handle);
-            if (c == EOF) // incomplete sequence
-                throw new UTFException("Invalid UTF-8 sequence");
-            u = cast(char) c;
-        }
-        return buf[0 .. seqLen];
-    }
-
-    /* Read a utf8 sequence from the file into _front, putting the chars back so
-    that they can be read again.
-    Destroys/closes the file when at EOF. */
-    private void readFront()
-    {
-        import std.exception : enforce;
-        import std.utf : decodeFront;
-
-        char[4] buf;
-        auto chars = takeFront(buf);
-
-        if (chars.empty)
-        {
-            .destroy(_f);
-            assert(empty);
-            return;
-        }
-
-        auto s = chars;
-        _front = decodeFront(s);
-
-        // Put everything back.
-        foreach(immutable i; 0 .. chars.length)
-        {
-            immutable c = chars[$ - 1 - i];
-            enforce(ungetc(c, cast(FILE*) _f._p.handle) == c);
-        }
-    }
-
     void popFront()
     {
-        version(assert)
-        {
-            import core.exception : RangeError;
-            if (empty)
-                throw new RangeError();
-        }
-
-        // Pop the current front.
-        char[4] buf;
-        takeFront(buf);
-
-        // Read the next front, leaving the chars on the stream.
-        readFront();
+        if (!_hasChar)
+            empty;
+        _hasChar = false;
     }
-
-    // void unget(dchar c)
-    // {
-    //     ungetc(c, cast(FILE*) _f._p.handle);
-    // }
 }
 
 unittest
@@ -2969,8 +2965,9 @@ unittest // bugzilla 13686
     File(deleteme).readf("%s", &s);
     assert(s == "Тест");
 
-    auto ltr = LockingTextReader(File(deleteme));
-    assert(equal(ltr, "Тест"));
+    import std.utf;
+    auto ltr = LockingTextReader(File(deleteme)).byDchar;
+    assert(equal(ltr, "Тест".byDchar));
 }
 
 unittest // bugzilla 12320
@@ -2987,6 +2984,24 @@ unittest // bugzilla 12320
     assert(ltr.empty);
 }
 
+unittest // bugzilla 14861
+{
+    static import std.file;
+    auto deleteme = testFilename();
+    File fw = File(deleteme, "w");
+    for(int i; i != 5000; i++)
+        fw.writeln(i, ";", "Иванов;Пётр;Петрович");
+    fw.close();
+    scope(exit) std.file.remove(deleteme);
+    // Test read
+    File fr = File(deleteme, "r");
+    scope (exit) fr.close();
+    int nom; string fam, nam, ot;
+    // Error format read
+    while(!fr.eof)
+        fr.readf("%s;%s;%s;%s\n", &nom, &fam, &nam, &ot);
+}
+
 /**
  * Indicates whether $(D T) is a file handle of some kind.
  */
@@ -3001,13 +3016,6 @@ unittest
     static assert(isFileHandle!(FILE*));
     static assert(isFileHandle!(File));
 }
-
-/**
- * $(RED Deprecated. Please use $(D isFileHandle) instead. This alias will be
- *       removed in June 2015.)
- */
-deprecated("Please use isFileHandle instead.")
-alias isStreamingDevice = isFileHandle;
 
 /**
  * Property used by writeln/etc. so it can infer @safe since stdout is __gshared
@@ -3065,7 +3073,7 @@ void writeln(T...)(T args)
     {
         import std.exception : enforce;
 
-        enforce(fputc('\n', .trustedStdout._p.handle) == '\n');
+        enforce(fputc('\n', .trustedStdout._p.handle) == '\n', "fputc failed");
     }
     else static if (T.length == 1 &&
                     is(typeof(args[0]) : const(char)[]) &&
@@ -3295,7 +3303,7 @@ unittest
     // stdout.open(file, "w");
     // assert(stdout.isOpen);
     // writefln("Hello, %s world number %s!", "nice", 42);
-    // foreach (F ; TypeTuple!(ifloat, idouble, ireal))
+    // foreach (F ; AliasSeq!(ifloat, idouble, ireal))
     // {
     //     F a = 5i;
     //     F b = a % 2;
@@ -3409,7 +3417,7 @@ if (isSomeChar!C && is(Unqual!C == C) && !is(C == enum) &&
 
 unittest
 {
-    import std.typetuple : TypeTuple;
+    import std.meta : AliasSeq;
 
     //we can't actually test readln, so at the very least,
     //we test compilability
@@ -3417,12 +3425,12 @@ unittest
     {
         readln();
         readln('\t');
-        foreach (String; TypeTuple!(string, char[], wstring, wchar[], dstring, dchar[]))
+        foreach (String; AliasSeq!(string, char[], wstring, wchar[], dstring, dchar[]))
         {
             readln!String();
             readln!String('\t');
         }
-        foreach (String; TypeTuple!(char[], wchar[], dchar[]))
+        foreach (String; AliasSeq!(char[], wchar[], dchar[]))
         {
             String buf;
             readln(buf);
@@ -3591,8 +3599,8 @@ struct lines
 //             if (fileName.length && fclose(f))
 //                 StdioException("Could not close file `"~fileName~"'");
 //         }
-        import std.traits : ParameterTypeTuple;
-        alias Parms = ParameterTypeTuple!(dg);
+        import std.traits : Parameters;
+        alias Parms = Parameters!(dg);
         static if (isSomeString!(Parms[$ - 1]))
         {
             enum bool duplicate = is(Parms[$ - 1] == string)
@@ -3637,9 +3645,9 @@ struct lines
     {
         import std.exception : assumeUnique;
         import std.conv : to;
-        import std.traits : ParameterTypeTuple;
+        import std.traits : Parameters;
 
-        alias Parms = ParameterTypeTuple!(dg);
+        alias Parms = Parameters!(dg);
         enum duplicate = is(Parms[$ - 1] : immutable(ubyte)[]);
         int result = 1;
         int c = void;
@@ -3683,7 +3691,7 @@ struct lines
 unittest
 {
     static import std.file;
-    import std.typetuple : TypeTuple;
+    import std.meta : AliasSeq;
 
     //printf("Entering test at line %d\n", __LINE__);
     scope(failure) printf("Failed test at line %d\n", __LINE__);
@@ -3692,8 +3700,8 @@ unittest
     scope(exit) { std.file.remove(deleteme); }
 
     alias TestedWith =
-          TypeTuple!(string, wstring, dstring,
-                     char[], wchar[], dchar[]);
+          AliasSeq!(string, wstring, dstring,
+                    char[], wchar[], dchar[]);
     foreach (T; TestedWith) {
         // test looping with an empty file
         std.file.write(deleteme, "");
@@ -3734,9 +3742,7 @@ unittest
     }
 
     // test with ubyte[] inputs
-    //@@@BUG 2612@@@
-    //alias TestedWith2 = TypeTuple!(immutable(ubyte)[], ubyte[]);
-    alias TestedWith2 = TypeTuple!(immutable(ubyte)[], ubyte[]);
+    alias TestedWith2 = AliasSeq!(immutable(ubyte)[], ubyte[]);
     foreach (T; TestedWith2) {
         // test looping with an empty file
         std.file.write(deleteme, "");
@@ -3778,7 +3784,7 @@ unittest
 
     }
 
-    foreach (T; TypeTuple!(ubyte[]))
+    foreach (T; AliasSeq!(ubyte[]))
     {
         // test looping with a file with three lines, last without a newline
         // using a counter too this time
@@ -4046,35 +4052,48 @@ private struct ReadlnAppender
     import core.stdc.string;
 
     char[] buf;
-    size_t cap;
     size_t pos;
-    size_t initcap;
+    bool safeAppend = false;
 
     void initialize(char[] b)
     {
         buf = b;
-        cap = initcap = buf.capacity;
-        if (cap < buf.length)
-            cap = buf.length;
         pos = 0;
     }
     @property char[] data()
     {
-        // always shrink/extend the buffer to allow reuse in the next call
-        if (initcap > 0 || cap > buf.length)
+        if (safeAppend)
             assumeSafeAppend(buf.ptr[0..pos]);
         return buf.ptr[0..pos];
     }
 
+    bool reserveWithoutAllocating(size_t n)
+    {
+        if (buf.length >= pos + n) // buf is already large enough
+            return true;
+
+        immutable curCap = buf.capacity;
+        if (curCap >= pos + n)
+        {
+            buf.length = curCap;
+            /* Any extra capacity we end up not using can safely be claimed
+            by someone else. */
+            safeAppend = true;
+            return true;
+        }
+
+        return false;
+    }
     void reserve(size_t n)
     {
-        if (pos + n > cap)
+        if (!reserveWithoutAllocating(n))
         {
-            size_t ncap = cap * 2 + 128 + n;
+            size_t ncap = buf.length * 2 + 128 + n;
             char[] nbuf = new char[ncap];
             memcpy(nbuf.ptr, buf.ptr, pos);
-            cap = nbuf.capacity;
-            buf = nbuf.ptr[0 .. buf.length];   // remember initial length
+            buf = nbuf;
+            // Allocated a new buffer. No one else knows about it.
+            safeAppend = true;
         }
     }
     void putchar(char c)
@@ -4092,24 +4111,13 @@ private struct ReadlnAppender
         foreach(c; u)
             buf.ptr[pos++] = c;
     }
-    void putbuf(char[] b)
-    {
-        reserve(b.length);
-        memcpy(buf.ptr + pos, b.ptr, b.length);
-        pos += b.length;
-    }
     void putonly(char[] b)
     {
         assert(pos == 0);   // assume this is the only put call
-        if (b.length > cap)
-        {
-            buf = b.dup;
-            initcap = 0; // no need to call assumeSafeAppend
-        }
+        if (reserveWithoutAllocating(b.length))
+            memcpy(buf.ptr + pos, b.ptr, b.length);
         else
-        {
-            memcpy(buf.ptr, b.ptr, b.length);
-        }
+            buf = b.dup;
         pos = b.length;
     }
 }
