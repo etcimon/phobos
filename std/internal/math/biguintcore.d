@@ -1156,7 +1156,24 @@ public:
     }
 
 } // end BigUint
-
+unittest {
+    // Disabling FPU is necessary for unittests. Re-enabled
+    // in the unittests in mathspecial.d
+    version (ARM)
+    {
+        import ldc.llvmasm;
+        cast(void)__asm!uint("vmrs $0, fpscr\n"~
+                                "bic $0, #(3 << 24)\n"~
+                                "vmsr fpscr, $0", "=r");
+    }
+    else version (AArch64)
+    {
+        import ldc.llvmasm;
+        cast(void)__asm!uint("mrs $0, fpcr\n"~
+                                "and $0, $0, #~(1 << 25)\n"~
+                                "msr fpcr, $0", "=r");
+    }
+}
 @safe pure nothrow unittest
 {
     // ulong comparison test

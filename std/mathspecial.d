@@ -165,6 +165,26 @@ real beta(real x, real y)
     assert(isIdentical(beta(2, NaN(0xABC)), NaN(0xABC)));
 }
 
+@system unittest {
+
+    version (ARM)
+    {
+        import ldc.llvmasm;
+        // restore flush to zero and default nan mode
+        cast(void)__asm!uint("vmrs $0, fpscr\n"~
+                                "orr $0, #(3 << 24)\n"~
+                                "vmsr fpscr, $0", "=r");
+    }
+    else version (AArch64)
+    {
+        import ldc.llvmasm;
+        // restore default nan mode
+        cast(void)__asm!uint("mrs $0, fpcr\n"~
+                                "orr $0, $0, #(1 << 25)\n"~
+                                "msr fpcr, $0", "=r");
+    }
+}
+
 /** Digamma function
  *
  *  The digamma function is the logarithmic derivative of the gamma function.
