@@ -1010,21 +1010,23 @@ version (unittest)
     import core.internal.spinlock : SpinLock;
 
     SpinLock lock = SpinLock(SpinLock.Contention.brief);
+    version(iOS) enum pageSize = 16384;
+    else enum pageSize = 4096;
     enum numThreads = 100;
     void[][numThreads] buf;
     size_t count = 0;
-    shared SharedAscendingPageAllocator a = SharedAscendingPageAllocator(2 * 4096 * numThreads);
+    shared SharedAscendingPageAllocator a = SharedAscendingPageAllocator(2 * pageSize * numThreads);
 
     void fun()
     {
-        void[] b = a.allocate(4000);
-        assert(b.length == 4000);
+        void[] b = a.allocate(pageSize-96);
+        assert(b.length == pageSize-96);
 
         assert(a.expand(b, 96));
-        assert(b.length == 4096);
+        assert(b.length == pageSize);
 
-        a.expand(b, 4096);
-        assert(b.length == 4096 || b.length == 8192);
+        a.expand(b, pageSize);
+        assert(b.length == pageSize || b.length == pageSize*2);
 
         lock.lock();
         buf[count] = b;
