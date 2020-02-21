@@ -964,7 +964,7 @@ version (Posix) @system nothrow @nogc unittest
     assert((() nothrow @safe @nogc => alloc.owns(a))() == Ternary.yes);
     assert((() nothrow @safe @nogc => alloc.owns(b))() == Ternary.yes);
     // reducing the brk does not work on OSX
-    version (OSX) {} else
+    version (OSX) {} else version(iOS) {} else
     {
         assert((() nothrow @nogc => alloc.deallocate(b))());
         // Check that expand and deallocate work well

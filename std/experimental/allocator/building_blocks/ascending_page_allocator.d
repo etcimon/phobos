@@ -421,6 +421,9 @@ public:
     void[] buf;
     void[] prevBuf = null;
     AscendingPageAllocator a = AscendingPageAllocator(numPages * pageSize);
+    // Refresh values due to platform-specific restrictions
+    pageSize = a.pageSize;
+    numPages = a.numPages;
 
     foreach (i; 0 .. numPages)
     {
@@ -644,10 +647,13 @@ public:
 {
     import core.thread : ThreadGroup;
 
-    enum numThreads = 100;
-    enum pageSize = 4096;
+    size_t numThreads = 100;
+    size_t pageSize = 4096;
     shared SharedAscendingPageAllocator a = SharedAscendingPageAllocator(pageSize * numThreads);
-
+    // Refresh values due to platform-specific restrictions
+    pageSize = a.pageSize;
+    numThreads = a.numPages;
+    
     void fun()
     {
         void[] b = a.allocate(pageSize);
@@ -961,11 +967,13 @@ version (unittest)
     import std.algorithm.sorting : sort;
     import core.internal.spinlock : SpinLock;
 
+    version(iOS) enum pageSize = 16384;
+    else enum pageSize = 4096;
     enum numThreads = 100;
     SpinLock lock = SpinLock(SpinLock.Contention.brief);
     ulong[numThreads] ptrVals;
     size_t count = 0;
-    shared SharedAscendingPageAllocator a = SharedAscendingPageAllocator(4096 * numThreads);
+    shared SharedAscendingPageAllocator a = SharedAscendingPageAllocator(pageSize * numThreads);
 
     void fun()
     {
@@ -991,7 +999,7 @@ version (unittest)
     ptrVals[].sort();
     foreach (i; 0 .. numThreads - 1)
     {
-        assert(ptrVals[i] + 4096 == ptrVals[i + 1]);
+        assert(ptrVals[i] + pageSize == ptrVals[i + 1]);
     }
 }
 
