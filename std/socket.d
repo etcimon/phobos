@@ -2438,11 +2438,13 @@ public:
 @safe unittest
 {
     softUnittest({
-        enum PAIRS = 768;
+        version(iOS) enum PAIRS = 256;
+        else enum PAIRS = 768;
         version (Posix)
         () @trusted
         {
-            enum LIMIT = 2048;
+            version(iOS) enum LIMIT = 1024;
+            else enum LIMIT = 2048;
             static assert(LIMIT > PAIRS*2);
             import core.sys.posix.sys.resource;
             rlimit fileLimit;
